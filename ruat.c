@@ -85,24 +85,6 @@ int main(int argc, char **argv)
 	}
 	printf("  %d:  %s, %s, SN: %s\n", devx, manuf, prod, sernum);
 
-#if 0
-	/* Set the tuner gain */
-	if (gain == AUTO_GAIN) {
-		r = rtlsdr_set_tuner_gain_mode(dev, 0);
-	} else {
-		r = rtlsdr_set_tuner_gain_mode(dev, 1);
-		r = rtlsdr_set_tuner_gain(dev, gain);
-	}
-	if (r != 0) {
-		fprintf(stderr, "WARNING: Failed to set tuner gain.\n");
-		exit(1);
-	}
-	if (gain == AUTO_GAIN) {
-		fprintf(stderr, "Tuner gain set to automatic.\n");
-	} else {
-		fprintf(stderr, "Tuner gain set to %0.2f dB.\n", gain/10.0);
-	}
-#endif
 	rc = rtlsdr_set_tuner_gain_mode(dev, 0);
 	if (rc < 0) {
 		fprintf(stderr, TAG ": Error setting auto gain: %d\n", rc);
