@@ -185,17 +185,20 @@ int main(int argc, char **argv)
 static int to_phi(double *fbuf, unsigned char *buf, int len)
 {
 	int cnt;
-	int acc;
 	double vi, vq;
 	double phi;
 
 	cnt = 0;
 	while (len >= 2) {
-		acc = (*buf++ ^ 0x80) - 0x80;	/* sign-extend */
-		vi = (double) acc;
-		acc = (*buf++ ^ 0x80) - 0x80;
-		vq = (double) acc;
-		if (acc == 0) {
+		/*
+		 * No need to normalize to 1.0 because we're about to divide.
+		 */
+		vi = (double) *buf++ - 127;
+		if (vi != (double) (buf[-1] - 127)) {	/* P3 */
+			fprintf(stderr, "%d\n", buf[-1]);
+		}
+		vq = (double) *buf++ - 127;
+		if (vq == 0.0) {
 			phi = (vi < 0) ? -PI/2 : PI/2;
 		} else {
 			phi = atan(vi / vq);
