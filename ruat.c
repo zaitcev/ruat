@@ -6,7 +6,9 @@
  * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. See file COPYING
  * for details.
  */
+#include <sys/time.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,41 +27,45 @@
 #define TAG "ruat"
 
 struct ss_stat {
+	unsigned long mark;
 	unsigned long calls;
+	unsigned long samples;
 	unsigned long goodbits;
 	unsigned long maxfill;
 	unsigned long goodsync;
 };
 
+static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
+static void *rx_worker(void *arg);
 static int to_phi(double *fbuf, unsigned char *buf, int len);
 static int search_sync(struct ss_stat *stp, double *fbuf, int flen);
 
+struct mbuf {
+	unsigned char *buf;
+	unsigned int len;
+};
+
+#define NBUFS_MAX 10
+
+/* Could easily pass these as an argument to rx_worker, but meh. */
+static pthread_mutex_t rx_mutex;
+static pthread_cond_t rx_cond;
+static int rx_die;
+static int rx_nbufs, rx_in, rx_out;
+static struct mbuf rx_bufs[NBUFS_MAX];
+
 int main(int argc, char **argv)
 {
-	size_t bsize = 40960;	/* 1/100th of a second worth of samples XXX */
-	unsigned char *rbuf;
-	double *fbuf;
 	unsigned int device_count, devx;
 	char manuf[BUF_MAX], prod[BUF_MAX], sernum[BUF_MAX];
 	int ppm_error = 0;
 	unsigned int real_rate;
 	rtlsdr_dev_t *dev;
-	struct ss_stat stats;
-	int blen, rlen;
-	int flen, fleft;
+	pthread_t rx_thread;
 	int rc;
 
-	rbuf = malloc(bsize);
-	if (!rbuf) {
-		fprintf(stderr, TAG ": No core\n");
-		exit(1);
-	}
-	fbuf = malloc(bsize * sizeof(double) / 2);
-	if (!fbuf) {
-		fprintf(stderr, TAG ": No core\n");
-		exit(1);
-	}
-	memset(&stats, 0, sizeof(struct ss_stat));
+	pthread_mutex_init(&rx_mutex, NULL);
+	pthread_cond_init(&rx_cond, NULL);
 
 	device_count = rtlsdr_get_device_count();
 	if (!device_count) {
@@ -131,45 +137,154 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
+	rc = pthread_create(&rx_thread, NULL, rx_worker, NULL);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": Error in pthread_create: %d\n", rc);
+		exit(1);
+	}
+
+#if 1
 	/* Flushing is cargo-culted from rtl_adsb. */
 	sleep(1);
 	rtlsdr_read_sync(dev, NULL, 4096, NULL);
+#endif
 
+	rtlsdr_read_async(dev, rx_callback, NULL, 0, 0);
+
+	rx_die = 1;
+	rtlsdr_close(dev);
+	pthread_cond_signal(&rx_cond);
+
+	return 0;
+}
+
+static void rx_callback(unsigned char *buf, uint32_t len, void *ctx)
+{
+	unsigned char *tmp;
+	struct mbuf *p;
+
+	tmp = malloc(len);
+	memcpy(tmp, buf, len);
+
+	pthread_mutex_lock(&rx_mutex);
+
+	if (rx_nbufs >= NBUFS_MAX) {
+
+		pthread_mutex_unlock(&rx_mutex);
+		fprintf(stderr, TAG ": No buffs\n");
+		free(tmp);
+		return;
+	}
+
+	p = &rx_bufs[rx_in];
+	if (++rx_in == NBUFS_MAX) rx_in = 0;
+	p->buf = tmp;
+	p->len = len;
+	rx_nbufs++;
+
+	pthread_cond_signal(&rx_cond);
+	pthread_mutex_unlock(&rx_mutex);
+}
+
+static void *rx_worker(void *arg)
+{
+	double *fbuf;
+	unsigned int fsize = 40960;
+	struct ss_stat stats;
+	struct timeval now;
+	struct mbuf *p;
+	unsigned char *rbuf;
+	int flen, fleft;
+	int new_flen;
+	int rlen;
+	unsigned long t;
+	int rc;
+
+	memset(&stats, 0, sizeof(struct ss_stat));
+
+	fbuf = malloc(fsize);
+	if (!fbuf) {
+		fprintf(stderr, TAG ": No core\n");
+		exit(1);
+	}
+
+	gettimeofday(&now, NULL);
+	stats.mark = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
 	flen = 0;
 	for (;;) {
-		/*
-		 * Read simply hangs unless the requested size is aligned.
-		 */
-		blen = (bsize - flen*2) & ~0xFFF;
-		rc = rtlsdr_read_sync(dev, rbuf, blen, &rlen);
-		if (rc < 0) {
-			fprintf(stderr, TAG ": Read error: %d\n", rc);
-			exit(1);
+		pthread_mutex_lock(&rx_mutex);
+		if (rx_die) {
+			pthread_mutex_unlock(&rx_mutex);
+			break;
 		}
-		if (rlen > blen) {
-			fprintf(stderr,
-			    TAG ": Internal error 1: %d (%d %d) %d\n",
-			    blen, (int)bsize, flen, rlen);
-			exit(1);
+
+		if (rx_nbufs == 0) {
+			rc = pthread_cond_wait(&rx_cond, &rx_mutex);
+			if (rc != 0) {
+				fprintf(stderr,
+				    TAG ": Internal error 3: %d\n", rc);
+				pthread_mutex_unlock(&rx_mutex);
+				break;
+			}
+			if (rx_die) {
+				pthread_mutex_unlock(&rx_mutex);
+				break;
+			}
+
+			if (rx_nbufs == 0) {
+				pthread_mutex_unlock(&rx_mutex);
+				continue;
+			}
+		}
+
+		--rx_nbufs;
+		p = &rx_bufs[rx_out];
+		if (++rx_out == NBUFS_MAX) rx_out = 0;
+		rbuf = p->buf;
+		rlen = p->len;
+		p->buf = NULL;
+
+		pthread_mutex_unlock(&rx_mutex);
+
+		stats.samples += rlen/2;
+
+		new_flen = flen + rlen/2;
+		if (new_flen * sizeof(double) > fsize) {
+			fsize = new_flen * sizeof(double);
+			fbuf = realloc(fbuf, fsize);
+			if (!fbuf) {
+				fprintf(stderr, "No core: %u\n", fsize);
+				exit(1);
+			}
 		}
 
 		flen += to_phi(fbuf + flen, rbuf, rlen);
+		if (flen != new_flen) {
+			fprintf(stderr,
+			    TAG ": Internal error 4: %d %d\n", flen, new_flen);
+			exit(1);
+		}
+
+		free(rbuf);
+		rbuf = NULL;
 
 		fleft = search_sync(&stats, fbuf, flen);
 
 		memmove(fbuf, fbuf+flen-fleft, fleft * sizeof(double));
 		flen = fleft;
 
-		if (stats.calls >= 1000) {
-			printf("Calls %lu Bits %lu Maxfill %lu Syncs %lu\n",
-			    stats.calls, stats.goodbits, stats.maxfill,
-			    stats.goodsync);
-			break;
+		if (stats.samples >= 20000000) {
+			gettimeofday(&now, NULL);
+			t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
+			printf("Samples %lu dT %lu"
+			    " Bits %lu Maxfill %lu Syncs %lu\n",
+			    stats.samples, t - stats.mark,
+			    stats.goodbits, stats.maxfill, stats.goodsync);
+			memset(&stats, 0, sizeof(struct ss_stat));
+			stats.mark = t;
 		}
 	}
-
-	rtlsdr_close(dev);
-	return 0;
+	return NULL;
 }
 
 /*

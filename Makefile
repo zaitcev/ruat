@@ -1,6 +1,6 @@
 ##
 
-LDFLAGS = -lm
+LDFLAGS = -lm -lpthread
 
 CFLAGS += $(shell pkg-config --cflags librtlsdr)
 LDFLAGS += $(shell pkg-config --libs librtlsdr)
