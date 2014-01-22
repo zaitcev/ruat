@@ -38,7 +38,8 @@ struct ss_stat {
 
 	unsigned int is_dist[SAMPLE_HIST_SIZE];
 	unsigned int qs_dist[SAMPLE_HIST_SIZE];
-	unsigned int a_dist[ANGLE_HIST_SIZE];
+	unsigned int phi_dist[ANGLE_HIST_SIZE];
+	unsigned int dphi_dist[ANGLE_HIST_SIZE];
 };
 
 struct param {
@@ -329,7 +330,12 @@ static void *rx_worker(void *arg)
 				printf("\n");
 				printf("Phi");
 				for (i = 0; i < ANGLE_HIST_SIZE; i++) {
-					printf(" %d", stats.a_dist[i]);
+					printf(" %d", stats.phi_dist[i]);
+				}
+				printf("\n");
+				printf("Delta Phi");
+				for (i = 0; i < ANGLE_HIST_SIZE; i++) {
+					printf(" %d", stats.dphi_dist[i]);
 				}
 				printf("\n");
 			}
@@ -356,6 +362,7 @@ static int to_phi(struct ss_stat *stp,
 {
 	int cnt;
 	int v;
+	int bucket;
 	double vi, vq;
 	double phi;
 
@@ -378,6 +385,9 @@ static int to_phi(struct ss_stat *stp,
 		} else {
 			phi = atan(vi / vq);
 		}
+		bucket = ((int)(phi/PI * ANGLE_HIST_SIZE)) + ANGLE_HIST_SIZE/2;
+		bucket %= ANGLE_HIST_SIZE;	/* just in case */
+		stp->phi_dist[bucket]++;
 		fbuf[cnt++] = phi;
 		len -= 2;
 	}
@@ -400,6 +410,7 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 	enum { NBITS = (sizeof(sync_bits)-1)/sizeof(char) };
 	int n;
 	double delta_phi;
+	int b;
 	char bits[NBITS+1];
 	int bfill;
 
@@ -420,6 +431,8 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 		} else if (delta_phi > PI) {
 			delta_phi -= 2*PI;
 		}
+		b = (int)(delta_phi/PI * ANGLE_HIST_SIZE) + ANGLE_HIST_SIZE/2;
+		stp->dphi_dist[b % ANGLE_HIST_SIZE]++;
 		if (delta_phi < (150000.0/(float)UAT_RATE) * 2*PI) {
 			bfill = 0;
 			continue;
