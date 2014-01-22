@@ -389,7 +389,7 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 		} else if (delta_phi > PI) {
 			delta_phi -= 2*PI;
 		}
-		if (delta_phi < (100000.0/(float)UAT_RATE) * 2*PI) {
+		if (delta_phi < (150000.0/(float)UAT_RATE) * 2*PI) {
 			bfill = 0;
 			continue;
 		}
