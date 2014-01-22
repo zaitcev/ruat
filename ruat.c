@@ -28,7 +28,6 @@
 
 struct ss_stat {
 	unsigned long mark;
-	unsigned long calls;
 	unsigned long samples;
 	unsigned long goodbits;
 	unsigned long maxfill;
@@ -342,8 +341,6 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 	double delta_phi;
 	char bits[NBITS+1];
 	int bfill;
-
-	stp->calls++;
 
 	bfill = 0;
 	for (n = 0; n < flen; n += 2) {
