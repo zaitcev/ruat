@@ -43,6 +43,7 @@ struct ss_stat {
 
 struct param {
 	int gain;
+	int verbose;
 };
 
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
@@ -168,7 +169,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	rc = pthread_create(&rx_thread, NULL, rx_worker, NULL);
+	rc = pthread_create(&rx_thread, NULL, rx_worker, &par);
 	if (rc != 0) {
 		fprintf(stderr, TAG ": Error in pthread_create: %d\n", rc);
 		exit(1);
@@ -219,6 +220,7 @@ static void rx_callback(unsigned char *buf, uint32_t len, void *ctx)
 
 static void *rx_worker(void *arg)
 {
+	struct param *par = arg;
 	double *fbuf;
 	unsigned int fsize = 40960;
 	struct ss_stat stats;
@@ -314,21 +316,23 @@ static void *rx_worker(void *arg)
 			    stats.samples, t - stats.mark,
 			    stats.goodbits, stats.maxfill, stats.goodsync);
 
-			printf("I");
-			for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
-				printf(" %d", stats.is_dist[i]);
+			if (par->verbose) {
+				printf("I");
+				for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
+					printf(" %d", stats.is_dist[i]);
+				}
+				printf("\n");
+				printf("Q");
+				for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
+					printf(" %d", stats.qs_dist[i]);
+				}
+				printf("\n");
+				printf("Phi");
+				for (i = 0; i < ANGLE_HIST_SIZE; i++) {
+					printf(" %d", stats.a_dist[i]);
+				}
+				printf("\n");
 			}
-			printf("\n");
-			printf("Q");
-			for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
-				printf(" %d", stats.qs_dist[i]);
-			}
-			printf("\n");
-			printf("Phi");
-			for (i = 0; i < ANGLE_HIST_SIZE; i++) {
-				printf(" %d", stats.a_dist[i]);
-			}
-			printf("\n");
 
 			memset(&stats, 0, sizeof(struct ss_stat));
 			stats.mark = t;
@@ -459,6 +463,7 @@ static void params(struct param *par, int argc, char **argv)
 	long n;
 
 	par->gain = (~0);
+	par->verbose = 0;
 
 	argv += 1;
 	while ((arg = *argv++) != NULL) {
@@ -473,6 +478,8 @@ static void params(struct param *par, int argc, char **argv)
 					exit(1);
 				}
 				par->gain = n;
+			} else if (arg[1] == 'v') {
+				par->verbose = 1;
 			} else {
 				Usage();
 			}
@@ -484,7 +491,7 @@ static void params(struct param *par, int argc, char **argv)
 
 static void Usage(void)
 {
-	printf("Usage: " TAG " [-g gain]\n");
+	printf("Usage: " TAG " [-v] [-g gain]\n");
 	exit(1);
 }
 
