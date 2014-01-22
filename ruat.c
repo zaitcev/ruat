@@ -20,11 +20,11 @@
 #include <rtl-sdr.h>
 #define BUF_MAX  256
 
+#define TAG "ruat"
+
 #define UAT_FREQ  978000000	/* carrier or center frequency, Doc 9861 2.2 */
 #define UAT_MOD      312500	/* notional modulation */
 #define UAT_RATE (2*1041667)
-
-#define TAG "ruat"
 
 struct ss_stat {
 	unsigned long mark;
