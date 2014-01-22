@@ -341,7 +341,9 @@ static int to_phi(struct ss_stat *stp,
 		if (vi != (double) (buf[-1] - 127)) {	/* P3 */
 			fprintf(stderr, "%d\n", buf[-1]);
 		}
-		vq = (double) *buf++ - 127;
+		v = *buf++;
+		stp->qs_dist[v * SAMPLE_HIST_SIZE / 256]++;
+		vq = (double) (v - 127);
 		if (vq == 0.0) {
 			phi = (vi < 0) ? -PI/2 : PI/2;
 		} else {
