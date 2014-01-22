@@ -26,17 +26,24 @@
 #define UAT_MOD      312500	/* notional modulation */
 #define UAT_RATE (2*1041667)
 
+#define SAMPLE_HIST_SIZE  64
+#define ANGLE_HIST_SIZE   20
+
 struct ss_stat {
 	unsigned long mark;
 	unsigned long samples;
 	unsigned long goodbits;
 	unsigned long maxfill;
 	unsigned long goodsync;
+
+	unsigned int is_dist[SAMPLE_HIST_SIZE];
+	unsigned int qs_dist[SAMPLE_HIST_SIZE];
+	unsigned int a_dist[ANGLE_HIST_SIZE];
 };
 
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
-static int to_phi(double *fbuf, unsigned char *buf, int len);
+static int to_phi(struct ss_stat *, double *fbuf, unsigned char *buf, int len);
 static int search_sync(struct ss_stat *stp, double *fbuf, int flen);
 
 struct mbuf {
@@ -197,6 +204,7 @@ static void *rx_worker(void *arg)
 	int new_flen;
 	int rlen;
 	unsigned long t;
+	int i;
 	int rc;
 
 	memset(&stats, 0, sizeof(struct ss_stat));
@@ -257,7 +265,7 @@ static void *rx_worker(void *arg)
 			}
 		}
 
-		flen += to_phi(fbuf + flen, rbuf, rlen);
+		flen += to_phi(&stats, fbuf + flen, rbuf, rlen);
 		if (flen != new_flen) {
 			fprintf(stderr,
 			    TAG ": Internal error 4: %d %d\n", flen, new_flen);
@@ -275,10 +283,28 @@ static void *rx_worker(void *arg)
 		if (stats.samples >= 20000000) {
 			gettimeofday(&now, NULL);
 			t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
+
 			printf("Samples %lu dT %lu"
 			    " Bits %lu Maxfill %lu Syncs %lu\n",
 			    stats.samples, t - stats.mark,
 			    stats.goodbits, stats.maxfill, stats.goodsync);
+
+			printf("I");
+			for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
+				printf(" %d", stats.is_dist[i]);
+			}
+			printf("\n");
+			printf("Q");
+			for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
+				printf(" %d", stats.qs_dist[i]);
+			}
+			printf("\n");
+			printf("Phi");
+			for (i = 0; i < ANGLE_HIST_SIZE; i++) {
+				printf(" %d", stats.a_dist[i]);
+			}
+			printf("\n");
+
 			memset(&stats, 0, sizeof(struct ss_stat));
 			stats.mark = t;
 		}
@@ -296,9 +322,11 @@ static void *rx_worker(void *arg)
  *  len: length of samples in bytes (2 bytes per sample)
  *  returns: number of numbers in fbuf
  */
-static int to_phi(double *fbuf, unsigned char *buf, int len)
+static int to_phi(struct ss_stat *stp,
+    double *fbuf, unsigned char *buf, int len)
 {
 	int cnt;
+	int v;
 	double vi, vq;
 	double phi;
 
@@ -307,7 +335,9 @@ static int to_phi(double *fbuf, unsigned char *buf, int len)
 		/*
 		 * No need to normalize to 1.0 because we're about to divide.
 		 */
-		vi = (double) *buf++ - 127;
+		v = *buf++;
+		stp->is_dist[v * SAMPLE_HIST_SIZE / 256]++;
+		vi = (double) (v - 127);
 		if (vi != (double) (buf[-1] - 127)) {	/* P3 */
 			fprintf(stderr, "%d\n", buf[-1]);
 		}
