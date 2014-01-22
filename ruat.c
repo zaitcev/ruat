@@ -41,10 +41,17 @@ struct ss_stat {
 	unsigned int a_dist[ANGLE_HIST_SIZE];
 };
 
+struct param {
+	int gain;
+};
+
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
 static int to_phi(struct ss_stat *, double *fbuf, unsigned char *buf, int len);
 static int search_sync(struct ss_stat *stp, double *fbuf, int flen);
+static void params(struct param *, int argc, char **argv);
+static void Usage(void);
+static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
 
 struct mbuf {
 	unsigned char *buf;
@@ -62,16 +69,20 @@ static struct mbuf rx_bufs[NBUFS_MAX];
 
 int main(int argc, char **argv)
 {
+	struct param par;
 	unsigned int device_count, devx;
 	char manuf[BUF_MAX], prod[BUF_MAX], sernum[BUF_MAX];
 	int ppm_error = 0;
 	unsigned int real_rate;
+	int gain;
 	rtlsdr_dev_t *dev;
 	pthread_t rx_thread;
 	int rc;
 
 	pthread_mutex_init(&rx_mutex, NULL);
 	pthread_cond_init(&rx_cond, NULL);
+
+	params(&par, argc, argv);
 
 	device_count = rtlsdr_get_device_count();
 	if (!device_count) {
@@ -98,9 +109,23 @@ int main(int argc, char **argv)
 	printf("  %d:  %s, %s, SN: %s\n", devx, manuf, prod, sernum);
 
 	rc = rtlsdr_set_tuner_gain_mode(dev, 0);
-	if (rc < 0) {
-		fprintf(stderr, TAG ": Error setting auto gain: %d\n", rc);
-		exit(1);
+	if ((gain = par.gain) == (~0)) {
+		rc = rtlsdr_set_tuner_gain_mode(dev, 0);
+		if (rc < 0) {
+			fprintf(stderr,
+			    TAG ": Error setting auto gain: %d\n", rc);
+			exit(1);
+		}
+	} else {
+		rc = rtlsdr_set_tuner_gain_mode(dev, 1);
+		gain = nearest_gain(gain * 10, dev);
+		rc = rtlsdr_set_tuner_gain(dev, gain);
+		if (rc < 0) {
+			fprintf(stderr,
+			    TAG ": Error setting gain %d/10: %d\n", gain, rc);
+			exit(1);
+		}
+		printf("Gain set to %d\n", gain/10);
 	}
 
 	rtlsdr_set_agc_mode(dev, 1);
@@ -426,4 +451,62 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 	}
 
 	return bfill;
+}
+
+static void params(struct param *par, int argc, char **argv)
+{
+	char *arg;
+	long n;
+
+	par->gain = (~0);
+
+	argv += 1;
+	while ((arg = *argv++) != NULL) {
+		if (arg[0] == '-') {
+			if (arg[1] == 'g') {
+				if ((arg = *argv++) == NULL)
+					Usage();
+				n = strtol(arg, NULL, 10);
+				if (n < -10000 || n >= 10000) {
+					fprintf(stderr,
+					    TAG ": Invalid gain `%s'\n", arg);
+					exit(1);
+				}
+				par->gain = n;
+			} else {
+				Usage();
+			}
+		} else {
+			Usage();
+		}
+	}
+}
+
+static void Usage(void)
+{
+	printf("Usage: " TAG " [-g gain]\n");
+	exit(1);
+}
+
+/* taken from rtl_rm */
+static int nearest_gain(int target_gain, rtlsdr_dev_t *dev)
+{
+	int i, err1, err2, count, close_gain;
+	int* gains;
+	count = rtlsdr_get_tuner_gains(dev, NULL);
+	if (count <= 0) {
+		return 0;
+	}
+	gains = malloc(sizeof(int) * count);
+	count = rtlsdr_get_tuner_gains(dev, gains);
+	close_gain = gains[0];
+	for (i=0; i<count; i++) {
+		err1 = abs(target_gain - close_gain);
+		err2 = abs(target_gain - gains[i]);
+		if (err2 < err1) {
+			close_gain = gains[i];
+		}
+	}
+	free(gains);
+	return close_gain;
 }
