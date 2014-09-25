@@ -45,10 +45,13 @@ struct ss_stat {
 struct param {
 	int gain;
 	int verbose;
+	int dump_interval;	/* seconds */
 };
 
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
+static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t);
+static void stats_reset(struct ss_stat *sp, unsigned long t);
 static int to_phi(struct ss_stat *, double *fbuf, unsigned char *buf, int len);
 static int search_sync(struct ss_stat *stp, double *fbuf, int flen);
 static void params(struct param *, int argc, char **argv);
@@ -232,10 +235,7 @@ static void *rx_worker(void *arg)
 	int new_flen;
 	int rlen;
 	unsigned long t;
-	int i;
 	int rc;
-
-	memset(&stats, 0, sizeof(struct ss_stat));
 
 	fbuf = malloc(fsize);
 	if (!fbuf) {
@@ -244,7 +244,9 @@ static void *rx_worker(void *arg)
 	}
 
 	gettimeofday(&now, NULL);
-	stats.mark = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
+	t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
+	stats_reset(&stats, t);
+
 	flen = 0;
 	for (;;) {
 		pthread_mutex_lock(&rx_mutex);
@@ -308,43 +310,53 @@ static void *rx_worker(void *arg)
 		memmove(fbuf, fbuf+flen-fleft, fleft * sizeof(double));
 		flen = fleft;
 
-		if (stats.samples >= 20000000) {
-			gettimeofday(&now, NULL);
-			t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
-
-			printf("Samples %lu dT %lu"
-			    " Bits %lu Maxfill %lu Syncs %lu\n",
-			    stats.samples, t - stats.mark,
-			    stats.goodbits, stats.maxfill, stats.goodsync);
-
-			if (par->verbose) {
-				printf("I");
-				for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
-					printf(" %d", stats.is_dist[i]);
-				}
-				printf("\n");
-				printf("Q");
-				for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
-					printf(" %d", stats.qs_dist[i]);
-				}
-				printf("\n");
-				printf("Phi");
-				for (i = 0; i < ANGLE_HIST_SIZE; i++) {
-					printf(" %d", stats.phi_dist[i]);
-				}
-				printf("\n");
-				printf("Delta Phi");
-				for (i = 0; i < ANGLE_HIST_SIZE; i++) {
-					printf(" %d", stats.dphi_dist[i]);
-				}
-				printf("\n");
-			}
-
-			memset(&stats, 0, sizeof(struct ss_stat));
-			stats.mark = t;
+		gettimeofday(&now, NULL);
+		t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
+		if (t - stats.mark >= par->dump_interval*1000000) {
+			stats_dump(&stats, par, t);
+			stats_reset(&stats, t);
 		}
 	}
 	return NULL;
+}
+
+static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t)
+{
+	int i;
+
+	printf("Samples %lu dT %lu"
+	    " Bits %lu Maxfill %lu Syncs %lu\n",
+	    sp->samples, t - sp->mark,
+	    sp->goodbits, sp->maxfill, sp->goodsync);
+
+	if (par->verbose) {
+		printf("I");
+		for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
+			printf(" %d", sp->is_dist[i]);
+		}
+		printf("\n");
+		printf("Q");
+		for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
+			printf(" %d", sp->qs_dist[i]);
+		}
+		printf("\n");
+		printf("Phi");
+		for (i = 0; i < ANGLE_HIST_SIZE; i++) {
+			printf(" %d", sp->phi_dist[i]);
+		}
+		printf("\n");
+		printf("Delta Phi");
+		for (i = 0; i < ANGLE_HIST_SIZE; i++) {
+			printf(" %d", sp->dphi_dist[i]);
+		}
+		printf("\n");
+	}
+}
+
+static void stats_reset(struct ss_stat *sp, unsigned long t)
+{
+	memset(sp, 0, sizeof(struct ss_stat));
+	sp->mark = t;
 }
 
 /*
@@ -424,6 +436,8 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 		 * filtering for bandwidth limitation introduces some
 		 * overshoot in the deviation, the maximum deviation is
 		 * closer to ±450 kHz."
+		 *
+		 * So, for now we use made-up constraints instead of UAT_MOD.
 		 */
 		delta_phi = fbuf[n+1] - fbuf[n];
 		if (delta_phi < -PI) {
@@ -477,11 +491,21 @@ static void params(struct param *par, int argc, char **argv)
 
 	par->gain = (~0);
 	par->verbose = 0;
+	par->dump_interval = 10;
 
 	argv += 1;
 	while ((arg = *argv++) != NULL) {
 		if (arg[0] == '-') {
-			if (arg[1] == 'g') {
+			if (arg[1] == 'd') {
+				if ((arg = *argv++) == NULL)
+					Usage();
+				n = strtol(arg, NULL, 10);
+				if (n < 1)
+					n = 1;
+				if (n >= 24*60*60)
+					n = 24*60*60;
+				par->dump_interval = n;
+			} else if (arg[1] == 'g') {
 				if ((arg = *argv++) == NULL)
 					Usage();
 				n = strtol(arg, NULL, 10);
@@ -504,7 +528,7 @@ static void params(struct param *par, int argc, char **argv)
 
 static void Usage(void)
 {
-	printf("Usage: " TAG " [-v] [-g gain]\n");
+	printf("Usage: " TAG " [-v] [-d interval] [-g gain]\n");
 	exit(1);
 }
 
