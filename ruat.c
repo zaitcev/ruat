@@ -14,9 +14,6 @@
 #include <string.h>
 #include <unistd.h>
 
-/* Unable to find pi in math.h. Strange... */
-#define PI 3.1415926536
-
 #include <rtl-sdr.h>
 #define BUF_MAX  256
 
@@ -393,11 +390,11 @@ static int to_phi(struct ss_stat *stp,
 		stp->qs_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vq = (double) (v - 127);
 		if (vq == 0.0) {
-			phi = (vi < 0) ? -PI/2 : PI/2;
+			phi = (vi < 0) ? -M_PI/2 : M_PI/2;
 		} else {
 			phi = atan(vi / vq);
 		}
-		bucket = ((int)(phi/PI * ANGLE_HIST_SIZE)) + ANGLE_HIST_SIZE/2;
+		bucket = ((int)(phi/M_PI * ANGLE_HIST_SIZE)) + ANGLE_HIST_SIZE/2;
 		bucket %= ANGLE_HIST_SIZE;	/* just in case */
 		stp->phi_dist[bucket]++;
 		fbuf[cnt++] = phi;
@@ -440,18 +437,18 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 		 * So, for now we use made-up constraints instead of UAT_MOD.
 		 */
 		delta_phi = fbuf[n+1] - fbuf[n];
-		if (delta_phi < -PI) {
-			delta_phi += 2*PI;
-		} else if (delta_phi > PI) {
-			delta_phi -= 2*PI;
+		if (delta_phi < -M_PI) {
+			delta_phi += 2*M_PI;
+		} else if (delta_phi > M_PI) {
+			delta_phi -= 2*M_PI;
 		}
-		b = (int)(delta_phi/PI * ANGLE_HIST_SIZE) + ANGLE_HIST_SIZE/2;
+		b = (int)(delta_phi/M_PI * ANGLE_HIST_SIZE) + ANGLE_HIST_SIZE/2;
 		stp->dphi_dist[b % ANGLE_HIST_SIZE]++;
-		if (delta_phi < (150000.0/(float)UAT_RATE) * 2*PI) {
+		if (delta_phi < (150000.0/(float)UAT_RATE) * 2*M_PI) {
 			bfill = 0;
 			continue;
 		}
-		if (delta_phi > (500000.0/(float)UAT_RATE) * 2*PI) {
+		if (delta_phi > (500000.0/(float)UAT_RATE) * 2*M_PI) {
 			bfill = 0;
 			continue;
 		}
