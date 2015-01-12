@@ -444,11 +444,11 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 		}
 		b = (int)(delta_phi/M_PI * ANGLE_HIST_SIZE) + ANGLE_HIST_SIZE/2;
 		stp->dphi_dist[b % ANGLE_HIST_SIZE]++;
-		if (delta_phi < (150000.0/(float)UAT_RATE) * 2*M_PI) {
+		if (fabs(delta_phi) < (150000.0/(float)UAT_RATE) * 2*M_PI) {
 			bfill = 0;
 			continue;
 		}
-		if (delta_phi > (500000.0/(float)UAT_RATE) * 2*M_PI) {
+		if (fabs(delta_phi) > (500000.0/(float)UAT_RATE) * 2*M_PI) {
 			bfill = 0;
 			continue;
 		}
