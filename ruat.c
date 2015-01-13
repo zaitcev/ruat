@@ -30,7 +30,7 @@ struct ss_stat {
 	unsigned long mark;
 	unsigned long samples;
 	unsigned long goodbits;
-	unsigned long maxfill;
+	unsigned long goodlen;
 	unsigned long goodsync;
 
 	unsigned int is_dist[SAMPLE_HIST_SIZE];
@@ -50,7 +50,7 @@ static void *rx_worker(void *arg);
 static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t);
 static void stats_reset(struct ss_stat *sp, unsigned long t);
 static int to_phi(struct ss_stat *, double *fbuf, unsigned char *buf, int len);
-static int search_sync(struct ss_stat *stp, double *fbuf, int flen);
+static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
@@ -224,13 +224,14 @@ static void *rx_worker(void *arg)
 	struct param *par = arg;
 	double *fbuf;
 	unsigned int fsize = 40960;
+	int runlen;
 	struct ss_stat stats;
 	struct timeval now;
 	struct mbuf *p;
 	unsigned char *rbuf;
+	int rlen;
 	int flen, fleft;
 	int new_flen;
-	int rlen;
 	unsigned long t;
 	int rc;
 
@@ -244,6 +245,7 @@ static void *rx_worker(void *arg)
 	t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
 	stats_reset(&stats, t);
 
+	runlen = 0;
 	flen = 0;
 	for (;;) {
 		pthread_mutex_lock(&rx_mutex);
@@ -302,7 +304,7 @@ static void *rx_worker(void *arg)
 		free(rbuf);
 		rbuf = NULL;
 
-		fleft = search_sync(&stats, fbuf, flen);
+		fleft = search_sync(&stats, &runlen, fbuf, flen);
 
 		memmove(fbuf, fbuf+flen-fleft, fleft * sizeof(double));
 		flen = fleft;
@@ -322,9 +324,9 @@ static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t)
 	int i;
 
 	printf("Samples %lu dT %lu"
-	    " Bits %lu Maxfill %lu Syncs %lu\n",
+	    " Bits %lu Maxlen %lu Syncs %lu\n",
 	    sp->samples, t - sp->mark,
-	    sp->goodbits, sp->maxfill, sp->goodsync);
+	    sp->goodbits, sp->goodlen, sp->goodsync);
 
 	if (par->verbose) {
 		printf("I");
@@ -407,7 +409,7 @@ static int to_phi(struct ss_stat *stp,
  *
  * XXX Only searching half of signals for now!
  */
-static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
+static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen)
 {
 	const char sync_bits[] = "111010101100110111011010010011100010";
 	enum { NBITS = (sizeof(sync_bits)-1)/sizeof(char) };
@@ -440,13 +442,16 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 		stp->dphi_dist[b % ANGLE_HIST_SIZE]++;
 		if (fabs(delta_phi) < (150000.0/(float)UAT_RATE) * 2*M_PI) {
 			bfill = 0;
+			*runl = 0;
 			continue;
 		}
 		if (fabs(delta_phi) > (500000.0/(float)UAT_RATE) * 2*M_PI) {
 			bfill = 0;
+			*runl = 0;
 			continue;
 		}
 		stp->goodbits++;
+		if (++(*runl) > stp->goodlen) stp->goodlen = *runl;
 
 		if (bfill >= NBITS) {
 			bits[NBITS] = 0;
@@ -455,7 +460,6 @@ static int search_sync(struct ss_stat *stp, double *fbuf, int flen)
 			exit(1);
 		}
 		bits[bfill++] = (delta_phi < 0) ? '0' : '1';
-		if (bfill > stp->maxfill) stp->maxfill = bfill;
 		if (bfill == NBITS) {
 			bits[bfill] = 0;
 			if (strcmp(bits, sync_bits) == 0) {
