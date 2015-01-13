@@ -381,6 +381,7 @@ static int to_phi(struct ss_stat *stp,
 	while (len >= 2) {
 		/*
 		 * No need to normalize to 1.0 because we're about to divide.
+		 * XXX What about 00 = -1.0, 0xff = +1.0, thus zero at 127.5?
 		 */
 		v = *buf++;
 		stp->is_dist[v * SAMPLE_HIST_SIZE / 256]++;
@@ -388,7 +389,7 @@ static int to_phi(struct ss_stat *stp,
 		v = *buf++;
 		stp->qs_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vq = (double) (v - 127);
-		phi = atan2(vi, vq);
+		phi = atan2(vq, vi);		/* V = Inphase + j*Quadrature */
 		/* XXX when phi is exactly pi or -pi, histogram wraps. */
 		bucket = ((int)(phi/M_PI * (ANGLE_HIST_SIZE/2))) + ANGLE_HIST_SIZE/2;
 		bucket %= ANGLE_HIST_SIZE;	/* just in case */
