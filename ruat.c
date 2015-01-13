@@ -386,12 +386,9 @@ static int to_phi(struct ss_stat *stp,
 		v = *buf++;
 		stp->qs_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vq = (double) (v - 127);
-		if (vq == 0.0) {
-			phi = (vi < 0) ? -M_PI/2 : M_PI/2;
-		} else {
-			phi = atan(vi / vq);
-		}
-		bucket = ((int)(phi/M_PI * ANGLE_HIST_SIZE)) + ANGLE_HIST_SIZE/2;
+		phi = atan2(vi, vq);
+		/* XXX when phi is exactly pi or -pi, histogram wraps. */
+		bucket = ((int)(phi/M_PI * (ANGLE_HIST_SIZE/2))) + ANGLE_HIST_SIZE/2;
 		bucket %= ANGLE_HIST_SIZE;	/* just in case */
 		stp->phi_dist[bucket]++;
 		fbuf[cnt++] = phi;
