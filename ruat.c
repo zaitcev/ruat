@@ -383,9 +383,6 @@ static int to_phi(struct ss_stat *stp,
 		v = *buf++;
 		stp->is_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vi = (double) (v - 127);
-		if (vi != (double) (buf[-1] - 127)) {	/* P3 */
-			fprintf(stderr, "%d\n", buf[-1]);
-		}
 		v = *buf++;
 		stp->qs_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vq = (double) (v - 127);
