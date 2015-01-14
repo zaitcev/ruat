@@ -1,0 +1,15 @@
+The idea here is to make something like dump1090, but for UAT.
+
+Currently this does not exactly work, but please feel free to
+experiment further.
+
+If possible, use the old-style dongle with E4000 tuner. It works
+much better than R820T dongle for a mysterious reason (possibly
+having to do with 2 ADCs being used with E4000 and 1 ADC and DDC
+used with R820T).
+
+TODO
+- Fetch the gain list and set the maximum by default? The values vary.
+  The default does not work with a primitive antenna. Is this dangerous?
+  -g 42 for E4000
+  -g 48 for R820T
