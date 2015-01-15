@@ -31,7 +31,7 @@ struct ss_stat {
 	unsigned long samples;
 	unsigned long goodbits;
 	unsigned long goodlen;
-	unsigned long goodsync;
+	unsigned int goodsynca, goodsyncu;	/* ADS-B and Uplink */
 
 	unsigned int is_dist[SAMPLE_HIST_SIZE];
 	unsigned int qs_dist[SAMPLE_HIST_SIZE];
@@ -324,9 +324,9 @@ static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t)
 	int i;
 
 	printf("Samples %lu dT %lu"
-	    " Bits %lu Maxlen %lu Syncs %lu\n",
+	    " Bits %lu Maxlen %lu Syncs a:%u u:%u\n",
 	    sp->samples, t - sp->mark,
-	    sp->goodbits, sp->goodlen, sp->goodsync);
+	    sp->goodbits, sp->goodlen, sp->goodsynca, sp->goodsyncu);
 
 	if (par->verbose) {
 		printf("I");
@@ -412,8 +412,9 @@ static int to_phi(struct ss_stat *stp,
  */
 static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen)
 {
-	const char sync_bits[] = "111010101100110111011010010011100010";
-	enum { NBITS = (sizeof(sync_bits)-1)/sizeof(char) };
+	const char sync_bits_a[] = "111010101100110111011010010011100010";
+	const char sync_bits_u[] = "000101010011001000100101101100011101";
+	enum { NBITS = (sizeof(sync_bits_a)-1)/sizeof(char) }; /* both are 36 */
 	int n;
 	double delta_phi;
 	int b;
@@ -463,8 +464,11 @@ static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen)
 		bits[bfill++] = (delta_phi < 0) ? '0' : '1';
 		if (bfill == NBITS) {
 			bits[bfill] = 0;
-			if (strcmp(bits, sync_bits) == 0) {
-				stp->goodsync++;
+			if (strcmp(bits, sync_bits_a) == 0) {
+				stp->goodsynca++;
+				bfill = 0;
+			} else if (strcmp(bits, sync_bits_u) == 0) {
+				stp->goodsyncu++;
 				bfill = 0;
 			} else {
 				/*
