@@ -23,8 +23,7 @@
 #define UAT_MOD      312500	/* notional modulation */
 #define UAT_RATE (2*1041667)
 
-#define SAMPLE_HIST_SIZE  64
-#define ANGLE_HIST_SIZE   20
+#define NBITS 36		/* sync length for both Active and Uplink */
 
 struct ss_stat {
 	unsigned long mark;
@@ -32,42 +31,51 @@ struct ss_stat {
 	unsigned long goodbits;
 	unsigned long goodlen;
 	unsigned int goodsynca, goodsyncu;	/* ADS-B and Uplink */
-
-	unsigned int is_dist[SAMPLE_HIST_SIZE];
-	unsigned int qs_dist[SAMPLE_HIST_SIZE];
-	unsigned int phi_dist[ANGLE_HIST_SIZE];
-	unsigned int dphi_dist[ANGLE_HIST_SIZE];
 };
 
 struct param {
 	int gain;
-	int verbose;
+	int verbose;		/* XXX Currently does nothing */
 	int dump_interval;	/* seconds */
 };
 
+struct scan {
+	int runlen;		/* Run length for statistic */
+
+	char bits[NBITS+1];
+	int bfill;
+};
+
+struct fbuf {
+	double *buf;
+	unsigned int len;
+};
+
+static void alloc_fbuf(struct fbuf bufv[]);
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
 static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t);
 static void stats_reset(struct ss_stat *sp, unsigned long t);
-static int to_phi(struct ss_stat *, double *fbuf, unsigned char *buf, int len);
-static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen);
+static int to_phi(double *fbuf, unsigned char *buf, int len);
+static void search_sync(struct ss_stat *stp, struct scan *ssp, int _rx_out);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
 
-struct mbuf {
-	unsigned char *buf;
-	unsigned int len;
-};
+/*
+ * The built-in default is not visible to rtlsdr clients. So, hardcode.
+ */
+#define DEFAULT_BUF_LENGTH	(16 * 32 * 512)
 
 #define NBUFS_MAX 10
+#define FBUF_DIM  (DEFAULT_BUF_LENGTH / 2)
 
 /* Could easily pass these as an argument to rx_worker, but meh. */
 static pthread_mutex_t rx_mutex;
 static pthread_cond_t rx_cond;
 static int rx_die;
 static int rx_nbufs, rx_in, rx_out;
-static struct mbuf rx_bufs[NBUFS_MAX];
+static struct fbuf rx_bufs[NBUFS_MAX];
 
 int main(int argc, char **argv)
 {
@@ -85,6 +93,8 @@ int main(int argc, char **argv)
 	pthread_cond_init(&rx_cond, NULL);
 
 	params(&par, argc, argv);
+
+	alloc_fbuf(rx_bufs);
 
 	device_count = rtlsdr_get_device_count();
 	if (!device_count) {
@@ -182,9 +192,11 @@ int main(int argc, char **argv)
 	rtlsdr_read_sync(dev, NULL, 4096, NULL);
 #endif
 
-	rtlsdr_read_async(dev, rx_callback, NULL, 0, 0);
+	rtlsdr_read_async(dev, rx_callback, NULL, 0, DEFAULT_BUF_LENGTH);
 
+	pthread_mutex_lock(&rx_mutex);
 	rx_die = 1;
+	pthread_mutex_unlock(&rx_mutex);
 	rtlsdr_close(dev);
 	pthread_cond_signal(&rx_cond);
 
@@ -193,30 +205,46 @@ int main(int argc, char **argv)
 
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
-	unsigned char *tmp;
-	struct mbuf *p;
-
-	tmp = malloc(len);
-	memcpy(tmp, buf, len);
+	struct fbuf *p;
 
 	pthread_mutex_lock(&rx_mutex);
 
 	if (rx_nbufs >= NBUFS_MAX) {
-
 		pthread_mutex_unlock(&rx_mutex);
 		fprintf(stderr, TAG ": No buffs\n");
-		free(tmp);
 		return;
 	}
 
 	p = &rx_bufs[rx_in];
 	if (++rx_in == NBUFS_MAX) rx_in = 0;
-	p->buf = tmp;
-	p->len = len;
+
+	p->len = to_phi(p->buf, buf, len);
+
 	rx_nbufs++;
 
 	pthread_cond_signal(&rx_cond);
 	pthread_mutex_unlock(&rx_mutex);
+}
+
+/*
+ * We pass know the size of buffers in rtlsdr_read_async(),
+ * sp we never run outside of the preallocated phi buffers.
+ */
+static void alloc_fbuf(struct fbuf bufv[])
+{
+	struct fbuf *p;
+	int i;
+
+	p = bufv;
+	for (i = 0; i < NBUFS_MAX; i++) {
+		p->buf = malloc(sizeof(double) * FBUF_DIM);
+		if (p->buf == NULL) {
+			fprintf(stderr, TAG ": No core\n");
+			exit(1);
+		}
+		p->len = 0;
+		p++;
+	}
 }
 
 static void *rx_worker(void *arg)
@@ -224,14 +252,11 @@ static void *rx_worker(void *arg)
 	struct param *par = arg;
 	double *fbuf;
 	unsigned int fsize = 40960;
-	int runlen;
+	struct scan sstate;
 	struct ss_stat stats;
 	struct timeval now;
-	struct mbuf *p;
-	unsigned char *rbuf;
-	int rlen;
-	int flen, fleft;
-	int new_flen;
+	int _rx_out;
+	// struct fbuf *p;
 	unsigned long t;
 	int rc;
 
@@ -245,69 +270,31 @@ static void *rx_worker(void *arg)
 	t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
 	stats_reset(&stats, t);
 
-	runlen = 0;
-	flen = 0;
-	for (;;) {
-		pthread_mutex_lock(&rx_mutex);
-		if (rx_die) {
-			pthread_mutex_unlock(&rx_mutex);
-			break;
-		}
+	memset(&sstate, 0, sizeof(struct scan));
 
+	pthread_mutex_lock(&rx_mutex);
+	for (;;) {
+		if (rx_die)
+			break;
 		if (rx_nbufs == 0) {
 			rc = pthread_cond_wait(&rx_cond, &rx_mutex);
 			if (rc != 0) {
+				pthread_mutex_unlock(&rx_mutex);
 				fprintf(stderr,
 				    TAG ": Internal error 3: %d\n", rc);
-				pthread_mutex_unlock(&rx_mutex);
-				break;
-			}
-			if (rx_die) {
-				pthread_mutex_unlock(&rx_mutex);
-				break;
-			}
-
-			if (rx_nbufs == 0) {
-				pthread_mutex_unlock(&rx_mutex);
-				continue;
-			}
-		}
-
-		--rx_nbufs;
-		p = &rx_bufs[rx_out];
-		if (++rx_out == NBUFS_MAX) rx_out = 0;
-		rbuf = p->buf;
-		rlen = p->len;
-		p->buf = NULL;
-
-		pthread_mutex_unlock(&rx_mutex);
-
-		stats.samples += rlen/2;
-
-		new_flen = flen + rlen/2;
-		if (new_flen * sizeof(double) > fsize) {
-			fsize = new_flen * sizeof(double);
-			fbuf = realloc(fbuf, fsize);
-			if (!fbuf) {
-				fprintf(stderr, "No core: %u\n", fsize);
+				// break;
 				exit(1);
 			}
+			if (rx_die)
+				break;
+			if (rx_nbufs == 0)
+				continue;
 		}
 
-		flen += to_phi(&stats, fbuf + flen, rbuf, rlen);
-		if (flen != new_flen) {
-			fprintf(stderr,
-			    TAG ": Internal error 4: %d %d\n", flen, new_flen);
-			exit(1);
-		}
+		_rx_out = rx_out;
+		pthread_mutex_unlock(&rx_mutex);
 
-		free(rbuf);
-		rbuf = NULL;
-
-		fleft = search_sync(&stats, &runlen, fbuf, flen);
-
-		memmove(fbuf, fbuf+flen-fleft, fleft * sizeof(double));
-		flen = fleft;
+		search_sync(&stats, &sstate, _rx_out);
 
 		gettimeofday(&now, NULL);
 		t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
@@ -315,41 +302,28 @@ static void *rx_worker(void *arg)
 			stats_dump(&stats, par, t);
 			stats_reset(&stats, t);
 		}
+
+		pthread_mutex_lock(&rx_mutex);
+		if (rx_nbufs == 0) {
+			pthread_mutex_unlock(&rx_mutex);
+			fprintf(stderr, TAG ": Internal error 1\n");
+			exit(1);
+		}
+
+		if (++rx_out == NBUFS_MAX) rx_out = 0;
+		--rx_nbufs;
 	}
+	pthread_mutex_unlock(&rx_mutex);
 	return NULL;
 }
 
 static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t)
 {
-	int i;
 
 	printf("Samples %lu dT %lu"
 	    " Bits %lu Maxlen %lu Syncs a:%u u:%u\n",
 	    sp->samples, t - sp->mark,
 	    sp->goodbits, sp->goodlen, sp->goodsynca, sp->goodsyncu);
-
-	if (par->verbose) {
-		printf("I");
-		for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
-			printf(" %d", sp->is_dist[i]);
-		}
-		printf("\n");
-		printf("Q");
-		for (i = 0; i < SAMPLE_HIST_SIZE; i++) {
-			printf(" %d", sp->qs_dist[i]);
-		}
-		printf("\n");
-		printf("Phi");
-		for (i = 0; i < ANGLE_HIST_SIZE; i++) {
-			printf(" %d", sp->phi_dist[i]);
-		}
-		printf("\n");
-		printf("Delta Phi");
-		for (i = 0; i < ANGLE_HIST_SIZE; i++) {
-			printf(" %d", sp->dphi_dist[i]);
-		}
-		printf("\n");
-	}
 }
 
 static void stats_reset(struct ss_stat *sp, unsigned long t)
@@ -368,12 +342,10 @@ static void stats_reset(struct ss_stat *sp, unsigned long t)
  *  len: length of samples in bytes (2 bytes per sample)
  *  returns: number of numbers in fbuf
  */
-static int to_phi(struct ss_stat *stp,
-    double *fbuf, unsigned char *buf, int len)
+static int to_phi(double *fbuf, unsigned char *buf, int len)
 {
 	int cnt;
 	int v;
-	int bucket;
 	double vi, vq;
 	double phi;
 
@@ -384,16 +356,10 @@ static int to_phi(struct ss_stat *stp,
 		 * XXX What about 00 = -1.0, 0xff = +1.0, thus zero at 127.5?
 		 */
 		v = *buf++;
-		stp->is_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vi = (double) (v - 127);
 		v = *buf++;
-		stp->qs_dist[v * SAMPLE_HIST_SIZE / 256]++;
 		vq = (double) (v - 127);
 		phi = atan2(vq, vi);		/* V = Inphase + j*Quadrature */
-		/* XXX when phi is exactly pi or -pi, histogram wraps. */
-		bucket = ((int)(phi/M_PI * (ANGLE_HIST_SIZE/2))) + ANGLE_HIST_SIZE/2;
-		bucket %= ANGLE_HIST_SIZE;	/* just in case */
-		stp->phi_dist[bucket]++;
 		fbuf[cnt++] = phi;
 		len -= 2;
 	}
@@ -402,27 +368,41 @@ static int to_phi(struct ss_stat *stp,
 
 /*
  * Search for the sync bit sequence.
- * XXX Experimental function
+ *
+ * Input is the list of phi buffers. We take samples from rx_bufs and
+ * other associated globals, which is highly improper, but meh.
+ * We adjust corrent rx_out & rx_nbufs as a side effect, obviously.
+ *
  *  stp: persistent stats
- *  fbuf: angles
- *  flen: number of angles
- *  returns: number of leftover angles
+ *  ssp: persistent state
+ *  _rx_out: copy of global rx_out - current index into rx_bufs[]
  *
  * XXX Only searching half of signals for now!
  */
-static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen)
+static void search_sync(struct ss_stat *stp, struct scan *ssp, int _rx_out)
 {
 	const char sync_bits_a[] = "111010101100110111011010010011100010";
 	const char sync_bits_u[] = "000101010011001000100101101100011101";
-	enum { NBITS = (sizeof(sync_bits_a)-1)/sizeof(char) }; /* both are 36 */
-	int n;
 	double delta_phi;
-	int b;
-	char bits[NBITS+1];
-	int bfill;
+	double phi1, phi2;
+	struct fbuf *p;
+	int x;
 
-	bfill = 0;
-	for (n = 0; n < flen; n += 2) {
+	p = &rx_bufs[_rx_out];
+	x = 0;
+
+	stp->samples += p->len;
+
+	for (;;) {
+		/* XXX This only works as long as length is always even. */
+		if (x >= p->len)
+			return;
+		phi1 = p->buf[x++];
+
+		if (x >= p->len)
+			return;
+		phi2 = p->buf[x++];
+
 		/*
 		 * Let's find if the frequency went lower or higher than
 		 * the center, accounting for the modulo 2*pi.
@@ -434,54 +414,50 @@ static int search_sync(struct ss_stat *stp, int *runl, double *fbuf, int flen)
 		 *
 		 * So, for now we use made-up constraints instead of UAT_MOD.
 		 */
-		delta_phi = fbuf[n+1] - fbuf[n];
+		delta_phi = phi2 - phi1;
 		if (delta_phi < -M_PI) {
 			delta_phi += 2*M_PI;
 		} else if (delta_phi > M_PI) {
 			delta_phi -= 2*M_PI;
 		}
-		b = (int)(delta_phi/M_PI * ANGLE_HIST_SIZE) + ANGLE_HIST_SIZE/2;
-		stp->dphi_dist[b % ANGLE_HIST_SIZE]++;
 		if (fabs(delta_phi) < (150000.0/(float)UAT_RATE) * 2*M_PI) {
-			bfill = 0;
-			*runl = 0;
+			ssp->bfill = 0;
+			ssp->runlen = 0;
 			continue;
 		}
 		if (fabs(delta_phi) > (500000.0/(float)UAT_RATE) * 2*M_PI) {
-			bfill = 0;
-			*runl = 0;
+			ssp->bfill = 0;
+			ssp->runlen = 0;
 			continue;
 		}
 		stp->goodbits++;
-		if (++(*runl) > stp->goodlen) stp->goodlen = *runl;
+		if (++(ssp->runlen) > stp->goodlen) stp->goodlen = ssp->runlen;
 
-		if (bfill >= NBITS) {
-			bits[NBITS] = 0;
+		if (ssp->bfill >= NBITS) {
+			ssp->bits[NBITS] = 0;
 			fprintf(stderr,
-			    TAG ": Internal error 2: %s\n", bits);
+			    TAG ": Internal error 2: %s\n", ssp->bits);
 			exit(1);
 		}
-		bits[bfill++] = (delta_phi < 0) ? '0' : '1';
-		if (bfill == NBITS) {
-			bits[bfill] = 0;
-			if (strcmp(bits, sync_bits_a) == 0) {
+		ssp->bits[ssp->bfill++] = (delta_phi < 0) ? '0' : '1';
+		if (ssp->bfill == NBITS) {
+			ssp->bits[ssp->bfill] = 0;
+			if (strcmp(ssp->bits, sync_bits_a) == 0) {
 				stp->goodsynca++;
-				bfill = 0;
-			} else if (strcmp(bits, sync_bits_u) == 0) {
+				ssp->bfill = 0;
+			} else if (strcmp(ssp->bits, sync_bits_u) == 0) {
 				stp->goodsyncu++;
-				bfill = 0;
+				ssp->bfill = 0;
 			} else {
 				/*
 				 * Okay, so these are bits, but they do not
 				 * match. May be frame body, may be noise.
 				 * XXX inefficient
 				 */
-				memmove(bits, bits+1, --bfill);
+				memmove(ssp->bits, ssp->bits+1, --(ssp->bfill));
 			}
 		}
 	}
-
-	return bfill;
 }
 
 static void params(struct param *par, int argc, char **argv)
