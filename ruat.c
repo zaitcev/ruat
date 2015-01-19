@@ -16,6 +16,10 @@
 
 #include <rtl-sdr.h>
 #define BUF_MAX  256
+/*
+ * The built-in default is not visible to rtlsdr clients. So, hardcode.
+ */
+#define DEFAULT_BUF_LENGTH	(16 * 32 * 512)
 
 #define TAG "ruat"
 
@@ -51,6 +55,7 @@ struct fbuf {
 	unsigned int len;
 };
 
+static void preload_phi(void);
 static void alloc_fbuf(struct fbuf bufv[]);
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
@@ -62,12 +67,7 @@ static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
 
-/*
- * The built-in default is not visible to rtlsdr clients. So, hardcode.
- */
-#define DEFAULT_BUF_LENGTH	(16 * 32 * 512)
-
-#define NBUFS_MAX 10
+#define NBUFS 10
 #define FBUF_DIM  (DEFAULT_BUF_LENGTH / 2)
 
 /* Could easily pass these as an argument to rx_worker, but meh. */
@@ -75,7 +75,11 @@ static pthread_mutex_t rx_mutex;
 static pthread_cond_t rx_cond;
 static int rx_die;
 static int rx_nbufs, rx_in, rx_out;
-static struct fbuf rx_bufs[NBUFS_MAX];
+static struct fbuf rx_bufs[NBUFS];
+
+#if 1
+static double iq_to_phi[256][256];
+#endif
 
 int main(int argc, char **argv)
 {
@@ -94,6 +98,7 @@ int main(int argc, char **argv)
 
 	params(&par, argc, argv);
 
+	preload_phi();
 	alloc_fbuf(rx_bufs);
 
 	device_count = rtlsdr_get_device_count();
@@ -209,14 +214,14 @@ static void rx_callback(unsigned char *buf, uint32_t len, void *ctx)
 
 	pthread_mutex_lock(&rx_mutex);
 
-	if (rx_nbufs >= NBUFS_MAX) {
+	if (rx_nbufs >= NBUFS) {
 		pthread_mutex_unlock(&rx_mutex);
 		fprintf(stderr, TAG ": No buffs\n");
 		return;
 	}
 
 	p = &rx_bufs[rx_in];
-	if (++rx_in == NBUFS_MAX) rx_in = 0;
+	if (++rx_in == NBUFS) rx_in = 0;
 
 	p->len = to_phi(p->buf, buf, len);
 
@@ -225,6 +230,34 @@ static void rx_callback(unsigned char *buf, uint32_t len, void *ctx)
 	pthread_cond_signal(&rx_cond);
 	pthread_mutex_unlock(&rx_mutex);
 }
+
+#if 1
+/*
+ * Computing phi in-place: CPU 44%, RES 7742.
+ * Precomputing phi here: CPU 9%, RES 17372.
+ * You'd think that the program would be larger by 524288 bytes or so, but no.
+ * It's actually 9.3 MB bigger. But you cannot argue with the CPU savings.
+ * So much for the effects of caches and the memory wall.
+ */
+static void preload_phi(void)
+{
+	int vi, vq;
+	double phi;
+
+	/*
+	 * No need to normalize to 1.0 because we're about to divide.
+	 * XXX What about 00 = -1.0, 0xff = +1.0, thus zero at 127.5?
+	 */
+
+	for (vi = 0; vi < 256; vi++) {
+		for (vq = 0; vq < 256; vq++) {
+			/* V = Inphase + j*Quadrature; atan2(y,x) */
+			phi = atan2((double) (vq - 127), (double) (vi - 127));
+			iq_to_phi[vi][vq] = phi;
+		}
+	}
+}
+#endif
 
 /*
  * We pass know the size of buffers in rtlsdr_read_async(),
@@ -236,7 +269,7 @@ static void alloc_fbuf(struct fbuf bufv[])
 	int i;
 
 	p = bufv;
-	for (i = 0; i < NBUFS_MAX; i++) {
+	for (i = 0; i < NBUFS; i++) {
 		p->buf = malloc(sizeof(double) * FBUF_DIM);
 		if (p->buf == NULL) {
 			fprintf(stderr, TAG ": No core\n");
@@ -310,7 +343,7 @@ static void *rx_worker(void *arg)
 			exit(1);
 		}
 
-		if (++rx_out == NBUFS_MAX) rx_out = 0;
+		if (++rx_out == NBUFS) rx_out = 0;
 		--rx_nbufs;
 	}
 	pthread_mutex_unlock(&rx_mutex);
@@ -345,12 +378,14 @@ static void stats_reset(struct ss_stat *sp, unsigned long t)
 static int to_phi(double *fbuf, unsigned char *buf, int len)
 {
 	int cnt;
-	int v;
-	double vi, vq;
 	double phi;
 
 	cnt = 0;
 	while (len >= 2) {
+#if 0
+		int v;
+		double vi, vq;
+
 		/*
 		 * No need to normalize to 1.0 because we're about to divide.
 		 * XXX What about 00 = -1.0, 0xff = +1.0, thus zero at 127.5?
@@ -360,6 +395,14 @@ static int to_phi(double *fbuf, unsigned char *buf, int len)
 		v = *buf++;
 		vq = (double) (v - 127);
 		phi = atan2(vq, vi);		/* V = Inphase + j*Quadrature */
+#endif
+#if 1
+		int vi, vq;
+
+		vi = *buf++;
+		vq = *buf++;
+		phi = iq_to_phi[vi][vq];
+#endif
 		fbuf[cnt++] = phi;
 		len -= 2;
 	}
@@ -383,7 +426,7 @@ static void search_sync(struct ss_stat *stp, struct scan *ssp, int _rx_out)
 {
 	const char sync_bits_a[] = "111010101100110111011010010011100010";
 	const char sync_bits_u[] = "000101010011001000100101101100011101";
-	double delta_phi;
+	double delta_phi, mod_dphi;
 	double phi1, phi2;
 	struct fbuf *p;
 	int x;
@@ -420,12 +463,13 @@ static void search_sync(struct ss_stat *stp, struct scan *ssp, int _rx_out)
 		} else if (delta_phi > M_PI) {
 			delta_phi -= 2*M_PI;
 		}
-		if (fabs(delta_phi) < (150000.0/(float)UAT_RATE) * 2*M_PI) {
+		mod_dphi = fabs(delta_phi);
+		if (mod_dphi < (150000.0/(float)UAT_RATE) * 2*M_PI) {
 			ssp->bfill = 0;
 			ssp->runlen = 0;
 			continue;
 		}
-		if (fabs(delta_phi) > (500000.0/(float)UAT_RATE) * 2*M_PI) {
+		if (mod_dphi > (500000.0/(float)UAT_RATE) * 2*M_PI) {
 			ssp->bfill = 0;
 			ssp->runlen = 0;
 			continue;
