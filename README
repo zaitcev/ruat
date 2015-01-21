@@ -1,4 +1,11 @@
 The idea here is to make something like dump1090, but for UAT.
 
+Getting a good dongle and a good antenna is critical. The Maxlen has
+to be 4452. If it's less than that, the dongle isn't keeping sync
+or the antenna is not good enough.
+
+Make sure to test with maximum gain. Run rtl_test to identify the maximum
+gain, then set it with -g XX (-g 42 for Elonics, -g 49 for R820T).
+
 TODO
 (none)
