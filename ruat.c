@@ -401,13 +401,9 @@ static int to_phi(double *fbuf, unsigned char *buf, int len)
 /*
  * Search for the sync bit sequence in a phi buffer
  *
- * Input is the list of phi buffers. We take samples from rx_bufs and
- * other associated globals, which is highly improper, but meh.
- * We adjust corrent rx_out & rx_nbufs as a side effect, obviously.
- *
  *  stp: persistent stats
  *  ssp: persistent state
- *  _rx_out: copy of global rx_out - current index into rx_bufs[]
+ *  p: the input buffer
  *
  * XXX Only searching half of signals for now!
  */
