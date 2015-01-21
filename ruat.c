@@ -62,7 +62,7 @@ static void *rx_worker(void *arg);
 static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t);
 static void stats_reset(struct ss_stat *sp, unsigned long t);
 static int to_phi(double *fbuf, unsigned char *buf, int len);
-static void search_sync(struct ss_stat *stp, struct scan *ssp, int _rx_out);
+static void search_sync(struct ss_stat *stp, struct scan *ssp, struct fbuf *p);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
@@ -283,21 +283,12 @@ static void alloc_fbuf(struct fbuf bufv[])
 static void *rx_worker(void *arg)
 {
 	struct param *par = arg;
-	double *fbuf;
-	unsigned int fsize = 40960;
 	struct scan sstate;
 	struct ss_stat stats;
 	struct timeval now;
-	int _rx_out;
-	// struct fbuf *p;
+	struct fbuf *p;
 	unsigned long t;
 	int rc;
-
-	fbuf = malloc(fsize);
-	if (!fbuf) {
-		fprintf(stderr, TAG ": No core\n");
-		exit(1);
-	}
 
 	gettimeofday(&now, NULL);
 	t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
@@ -324,10 +315,10 @@ static void *rx_worker(void *arg)
 				continue;
 		}
 
-		_rx_out = rx_out;
+		p = &rx_bufs[rx_out];
 		pthread_mutex_unlock(&rx_mutex);
 
-		search_sync(&stats, &sstate, _rx_out);
+		search_sync(&stats, &sstate, p);
 
 		gettimeofday(&now, NULL);
 		t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
@@ -366,9 +357,7 @@ static void stats_reset(struct ss_stat *sp, unsigned long t)
 }
 
 /*
- * As it turns out, all these arc-tangets are hugely expensive. When doing
- * nothing else, ruat consumes exactly half of an 800 MHz AMD Turion.
- * So, we convert I/Q samples to angles once and stash them in a buffer
+ * Convert I/Q samples to angles and stash them in a buffer
  * where sync searches can access them several times.
  *  fbuf: return buffer
  *  buf: I/Q samples
@@ -410,7 +399,7 @@ static int to_phi(double *fbuf, unsigned char *buf, int len)
 }
 
 /*
- * Search for the sync bit sequence.
+ * Search for the sync bit sequence in a phi buffer
  *
  * Input is the list of phi buffers. We take samples from rx_bufs and
  * other associated globals, which is highly improper, but meh.
@@ -422,16 +411,14 @@ static int to_phi(double *fbuf, unsigned char *buf, int len)
  *
  * XXX Only searching half of signals for now!
  */
-static void search_sync(struct ss_stat *stp, struct scan *ssp, int _rx_out)
+static void search_sync(struct ss_stat *stp, struct scan *ssp, struct fbuf *p)
 {
 	const char sync_bits_a[] = "111010101100110111011010010011100010";
 	const char sync_bits_u[] = "000101010011001000100101101100011101";
 	double delta_phi, mod_dphi;
 	double phi1, phi2;
-	struct fbuf *p;
 	int x;
 
-	p = &rx_bufs[_rx_out];
 	x = 0;
 
 	stp->samples += p->len;
