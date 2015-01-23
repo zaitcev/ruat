@@ -29,6 +29,17 @@
 
 #define NBITS 36		/* sync length for both Active and Uplink */
 
+/*
+ * The code should work as long as BITS_LEN > NBITS and BITS_LEN > BITS_UPLINK.
+ * Considering how big the phi buffers are, could as well use a megabyte. But
+ * let's not blow caches so easily. So, maybe experiment with the size one day.
+ */
+#define BITS_LEN      10000
+
+#define BITS_ACTIVE_S   210	/* 144 bits data + 96 bits FEC */
+#define BITS_ACTIVE_L   384	/* 272 bits data + 112 bits FEC */
+#define BITS_UPLINK    4416	/* 3456 bits data + 960 bits FEC */
+
 struct ss_stat {
 	unsigned long mark;
 	unsigned long samples;
@@ -46,7 +57,7 @@ struct param {
 struct scan {
 	int runlen;		/* Run length for statistic */
 
-	char bits[NBITS+1];
+	char *bits;
 	int bfill;
 };
 
@@ -62,12 +73,19 @@ static void *rx_worker(void *arg);
 static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t);
 static void stats_reset(struct ss_stat *sp, unsigned long t);
 static int to_phi(double *fbuf, unsigned char *buf, int len);
-static void search_sync(struct ss_stat *stp, struct scan *ssp, struct fbuf *p);
+static void scan_init(struct scan *ssp);
+static void scan_fbuf(struct scan *ssp, struct ss_stat *stp, struct fbuf *p);
+static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
 
-#define NBUFS 10
+/*
+ * Phi buffers are very large, so we keep NBUFS as low as possible
+ * without getting the "No buffs" message. The number of USB buffers
+ * in librtlsdr.c is 15, but it's unclear if we need to match that.
+ */
+#define NBUFS  5
 #define FBUF_DIM  (DEFAULT_BUF_LENGTH / 2)
 
 /* Could easily pass these as an argument to rx_worker, but meh. */
@@ -231,7 +249,6 @@ static void rx_callback(unsigned char *buf, uint32_t len, void *ctx)
 	pthread_mutex_unlock(&rx_mutex);
 }
 
-#if 1
 /*
  * Computing phi in-place: CPU 44%, RES 7742.
  * Precomputing phi here: CPU 9%, RES 17372.
@@ -257,7 +274,6 @@ static void preload_phi(void)
 		}
 	}
 }
-#endif
 
 /*
  * We pass know the size of buffers in rtlsdr_read_async(),
@@ -294,7 +310,7 @@ static void *rx_worker(void *arg)
 	t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
 	stats_reset(&stats, t);
 
-	memset(&sstate, 0, sizeof(struct scan));
+	scan_init(&sstate);
 
 	pthread_mutex_lock(&rx_mutex);
 	for (;;) {
@@ -318,7 +334,7 @@ static void *rx_worker(void *arg)
 		p = &rx_bufs[rx_out];
 		pthread_mutex_unlock(&rx_mutex);
 
-		search_sync(&stats, &sstate, p);
+		scan_fbuf(&sstate, &stats, p);
 
 		gettimeofday(&now, NULL);
 		t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
@@ -398,19 +414,27 @@ static int to_phi(double *fbuf, unsigned char *buf, int len)
 	return cnt;
 }
 
+static void scan_init(struct scan *ssp)
+{
+	memset(ssp, 0, sizeof(struct scan));
+	ssp->bits = malloc(BITS_LEN);
+	if (ssp->bits == NULL) {
+		fprintf(stderr, TAG ": No core\n");
+		exit(1);
+	}
+}
+
 /*
- * Search for the sync bit sequence in a phi buffer
+ * Scan a phi buffer for the sync bit sequence, push packets downchain
  *
- *  stp: persistent stats
  *  ssp: persistent state
+ *  stp: persistent stats
  *  p: the input buffer
  *
  * XXX Only searching half of signals for now!
  */
-static void search_sync(struct ss_stat *stp, struct scan *ssp, struct fbuf *p)
+static void scan_fbuf(struct scan *ssp, struct ss_stat *stp, struct fbuf *p)
 {
-	const char sync_bits_a[] = "111010101100110111011010010011100010";
-	const char sync_bits_u[] = "000101010011001000100101101100011101";
 	double delta_phi, mod_dphi;
 	double phi1, phi2;
 	int x;
@@ -422,11 +446,11 @@ static void search_sync(struct ss_stat *stp, struct scan *ssp, struct fbuf *p)
 	for (;;) {
 		/* XXX This only works as long as length is always even. */
 		if (x >= p->len)
-			return;
+			break;
 		phi1 = p->buf[x++];
 
 		if (x >= p->len)
-			return;
+			break;
 		phi2 = p->buf[x++];
 
 		/*
@@ -447,42 +471,68 @@ static void search_sync(struct ss_stat *stp, struct scan *ssp, struct fbuf *p)
 			delta_phi -= 2*M_PI;
 		}
 		mod_dphi = fabs(delta_phi);
-		if (mod_dphi < (150000.0/(float)UAT_RATE) * 2*M_PI) {
-			ssp->bfill = 0;
-			ssp->runlen = 0;
-			continue;
-		}
-		if (mod_dphi > (500000.0/(float)UAT_RATE) * 2*M_PI) {
-			ssp->bfill = 0;
+		if (mod_dphi < (150000.0/(float)UAT_RATE) * 2*M_PI ||
+		    mod_dphi > (500000.0/(float)UAT_RATE) * 2*M_PI) {
+			if (ssp->bfill != 0)
+				scan_spill(ssp, stp, 1);
 			ssp->runlen = 0;
 			continue;
 		}
 		stp->goodbits++;
 		if (++(ssp->runlen) > stp->goodlen) stp->goodlen = ssp->runlen;
 
-		if (ssp->bfill >= NBITS) {
-			ssp->bits[NBITS] = 0;
-			fprintf(stderr,
-			    TAG ": Internal error 2: %s\n", ssp->bits);
-			exit(1);
+		if (ssp->bfill >= BITS_LEN) {
+			scan_spill(ssp, stp, 0);
+			if (ssp->bfill >= BITS_LEN) {
+				/* Never happens because we spilled */
+				fprintf(stderr, TAG ": Internal error 2\n");
+				exit(1);
+			}
 		}
 		ssp->bits[ssp->bfill++] = (delta_phi < 0) ? '0' : '1';
-		if (ssp->bfill == NBITS) {
-			ssp->bits[ssp->bfill] = 0;
-			if (strcmp(ssp->bits, sync_bits_a) == 0) {
-				stp->goodsynca++;
-				ssp->bfill = 0;
-			} else if (strcmp(ssp->bits, sync_bits_u) == 0) {
-				stp->goodsyncu++;
+	}
+	// scan_spill(ssp, stp, 0);
+}
+
+/*
+ * Spill the scan buffer
+ *
+ *  ssp: persistent state
+ *  stp: persistent stats
+ *  ended: this spill was invoked by a bad bit, no more contiguous bits
+ *
+ * At this point, the bit buffer contains a contiguous string of bits.
+ * It may be long enough to contain several packets.
+ */
+static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
+{
+	const char sync_bits_a[] = "111010101100110111011010010011100010";
+	const char sync_bits_u[] = "000101010011001000100101101100011101";
+	char *end = ssp->bits + ssp->bfill;
+	char *s;
+
+	s = ssp->bits;
+	for (;;) {
+		if (s + NBITS > end) {
+			if (ended) {
+				/* A few bits of junk, drop */
 				ssp->bfill = 0;
 			} else {
-				/*
-				 * Okay, so these are bits, but they do not
-				 * match. May be frame body, may be noise.
-				 * XXX inefficient
-				 */
-				memmove(ssp->bits, ssp->bits+1, --(ssp->bfill));
+				ssp->bfill = end - s;
+				if (s != ssp->bits && ssp->bfill != 0)
+					memmove(ssp->bits, s, ssp->bfill);
 			}
+			break;
+		}
+
+		if (memcmp(s, sync_bits_a, NBITS) == 0) {
+			stp->goodsynca++;
+			s += NBITS;
+		} else if (memcmp(s, sync_bits_u, NBITS) == 0) {
+			stp->goodsyncu++;
+			s += NBITS;
+		} else {
+			s++;
 		}
 	}
 }
