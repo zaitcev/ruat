@@ -58,7 +58,8 @@ struct scan {
 	int runlen;		/* Run length for statistic */
 
 	char *bits;
-	int bfill;
+	int bfill;		/* Total bits in bits[] */
+	int bwanted;		/* Target amount to complete packet */
 };
 
 struct fbuf {
@@ -76,6 +77,7 @@ static int to_phi(double *fbuf, unsigned char *buf, int len);
 static void scan_init(struct scan *ssp);
 static void scan_fbuf(struct scan *ssp, struct ss_stat *stp, struct fbuf *p);
 static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended);
+static void print_bits(char *bits, int len);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
@@ -503,6 +505,8 @@ static void scan_fbuf(struct scan *ssp, struct ss_stat *stp, struct fbuf *p)
  *
  * At this point, the bit buffer contains a contiguous string of bits.
  * It may be long enough to contain several packets.
+ *
+ * Before returning, we must reduce bfill (else we loop or crash).
  */
 static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 {
@@ -510,8 +514,37 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 	const char sync_bits_u[] = "000101010011001000100101101100011101";
 	char *end = ssp->bits + ssp->bfill;
 	char *s;
+	size_t off;
 
-	s = ssp->bits;
+	off = 0;
+	if (ssp->bwanted) {
+		if (ssp->bfill < ssp->bwanted) {
+			if (!ended) {
+				/*
+				 * The packet is not ended, but we spilled.
+				 * This is an internal error, because we only
+				 * should spill when the bit buffer overflows,
+				 * and the size of it should be longer than
+				 * the longest packet.
+				 */
+				fprintf(stderr,
+				    TAG ": Internal error 4: %d %d\n",
+				    ssp->bfill, ssp->bwanted);
+				exit(1);
+				// return;
+			}
+			/* A packet is truncated, restart scan */
+			ssp->bwanted = 0;
+			ssp->bfill = 0;
+			return;
+		}
+		/* We have a packet, print it, spill its bits, restart scan */
+		print_bits(ssp->bits, ssp->bwanted);
+		off = ssp->bwanted;
+		ssp->bwanted = 0;
+	}
+
+	s = ssp->bits + off;
 	for (;;) {
 		if (s + NBITS > end) {
 			if (ended) {
@@ -531,10 +564,37 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 		} else if (memcmp(s, sync_bits_u, NBITS) == 0) {
 			stp->goodsyncu++;
 			s += NBITS;
+			if (s + BITS_UPLINK > end) {
+				if (ended) {
+					/* An uplink packet is truncated */
+					ssp->bfill = 0;
+					break;
+				}
+				if (end-s >= ssp->bfill) {
+					fprintf(stderr,
+					    TAG ": Internal error 5: %d %ld\n",
+					    ssp->bfill, (long)(end-s));
+					exit(1);
+				}
+				ssp->bfill = end - s;
+				memmove(ssp->bits, s, ssp->bfill);
+				ssp->bwanted = BITS_UPLINK;
+				break;
+			}
+			print_bits(s, BITS_UPLINK);
+			s += BITS_UPLINK;
 		} else {
 			s++;
 		}
 	}
+}
+
+/*
+ * XXX very temporary - need to form bytes, de-interleave, error-correct.
+ */
+static void print_bits(char *bits, int len)
+{
+	printf("[%d]\n", len);
 }
 
 static void params(struct param *par, int argc, char **argv)
