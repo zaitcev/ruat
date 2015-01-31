@@ -11,8 +11,12 @@ ruat: ruat.o
 
 ruat.o: ruat.c
 
-#check: ruat
-#	cd test && nosetests --exe
+tester: tester.o
+
+tester.o: tester.c
+
+check: tester
+	./tester
 
 clean:
-	rm -f ruat *.o
+	rm -f ruat tester *.o
