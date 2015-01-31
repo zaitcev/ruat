@@ -8,4 +8,5 @@ Make sure to test with maximum gain. Run rtl_test to identify the maximum
 gain, then set it with -g XX (-g 42 for Elonics, -g 49 for R820T).
 
 TODO
-(none)
+ - switch to fixed point, we're still on 11% CPU
+ - precalc arc-tangents once and link to them at build time
