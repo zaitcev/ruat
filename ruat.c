@@ -39,6 +39,7 @@
 #define BITS_ACTIVE_S   210	/* 144 bits data + 96 bits FEC */
 #define BITS_ACTIVE_L   384	/* 272 bits data + 112 bits FEC */
 #define BITS_UPLINK    4416	/* 3456 bits data + 960 bits FEC */
+#define BITS_U_STEP     736	/* or as they say, 92 8-bit codewords */
 
 struct ss_stat {
 	unsigned long mark;
@@ -53,6 +54,23 @@ struct param {
 	int verbose;		/* XXX Currently does nothing */
 	int dump_interval;	/* seconds */
 };
+
+/*
+ * Pack a string of 8 bit-per-byte bits into a byte.
+ *
+ * Stricly speaking, Anx.10 V.3 12.4.4.2.2.2.2 only talks about the bit
+ * order of bytes of FEC, but it's unthinkable to have it different from
+ * the data bytes, right? So, MSB first it is.
+ */
+#define PICK_BYTE(p)	\
+	( (((p)[0] & 1) << 7) | \
+	  (((p)[1] & 1) << 6) | \
+	  (((p)[2] & 1) << 5) | \
+	  (((p)[3] & 1) << 4) | \
+	  (((p)[4] & 1) << 3) | \
+	  (((p)[5] & 1) << 2) | \
+	  (((p)[6] & 1) << 1) | \
+	   ((p)[7] & 1) )
 
 struct scan {
 	int runlen;		/* Run length for statistic */
@@ -77,7 +95,7 @@ static int to_phi(double *fbuf, unsigned char *buf, int len);
 static void scan_init(struct scan *ssp);
 static void scan_fbuf(struct scan *ssp, struct ss_stat *stp, struct fbuf *p);
 static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended);
-static void print_bits(char *bits, int len);
+static void packet_uplink(char *bits);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
 static int nearest_gain(int target_gain, rtlsdr_dev_t *dev);
@@ -539,7 +557,11 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 			return;
 		}
 		/* We have a packet, print it, spill its bits, restart scan */
-		print_bits(ssp->bits, ssp->bwanted);
+		if (ssp->bwanted == BITS_UPLINK) {
+			packet_uplink(ssp->bits);
+		} else {
+			printf("a\n");
+		}
 		off = ssp->bwanted;
 		ssp->bwanted = 0;
 	}
@@ -581,7 +603,7 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 				ssp->bwanted = BITS_UPLINK;
 				break;
 			}
-			print_bits(s, BITS_UPLINK);
+			packet_uplink(s);
 			s += BITS_UPLINK;
 		} else {
 			s++;
@@ -591,10 +613,32 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 
 /*
  * XXX very temporary - need to form bytes, de-interleave, error-correct.
+ * See Annex 10 Volume III 12.4.4.2.2.3 for the interleaving procedure.
+ *
+ *  bits: A bit buffer of length BITS_UPLINK
  */
-static void print_bits(char *bits, int len)
+static void packet_uplink(char *bits)
 {
-	printf("[%d]\n", len);
+	unsigned char packet[BITS_UPLINK/8];
+	unsigned char d;
+	int i;
+
+	for (i = 0; i < BITS_UPLINK/8; i++) {
+		d = PICK_BYTE(bits); bits += 8;
+		packet[(i%6) * (BITS_U_STEP/8) + (i/6)] = d;
+	}
+
+	/*
+	 * XXX This syntax differs from the dump978 standard because FEC
+	 * is not applied yet.
+	 */
+	printf("u");
+	for (i = 0; i < BITS_UPLINK/8; i++) {
+		if (i % 92 == 0)
+			printf(" ");
+		printf("%02x", packet[i]);
+	}
+	printf("\n");
 }
 
 static void params(struct param *par, int argc, char **argv)
