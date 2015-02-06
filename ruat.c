@@ -612,7 +612,6 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 }
 
 /*
- * XXX very temporary - need to form bytes, de-interleave, error-correct.
  * See Annex 10 Volume III 12.4.4.2.2.3 for the interleaving procedure.
  *
  *  bits: A bit buffer of length BITS_UPLINK
