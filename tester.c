@@ -340,9 +340,9 @@ static void gen256(unsigned char dst[256], unsigned int prim_poly)
 	 *
 	 * The key observation is that each next step can be a multiplication:
 	 *   alpha^(i+1) == alpha * alpha^i
-	 * But, if we open the parenthesii, it amounts to incrementing
-	 * the power of each member by 1. Which is shift left by 1.
-	 * And, the shift produces an alpha^8, we substitute identity
+	 * But, if we open the parenthesii, it amounts to incrementing the
+	 * power of each member of the poly by 1. Which is shift left by 1.
+	 * And, if the shift produces an alpha^8, we substitute identity
 	 * and add (xor, of course).
 	 *
 	 * Finally, shift happens to work for smaller powers of alpha, too.
