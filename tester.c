@@ -307,6 +307,12 @@ static char gf256_8_4_3_2_0[256][8] = {
 };
 
 /*
+ * The primitive polynomial of UAT is defined by ICAO Annex 10 Volume III,
+ * 12.4.4.1.3.1 and 12.4.4.2.2.2.1 as p(x) = x^8 + x^7 + x^2 + x + 1, or 0x187.
+ */
+#define GF256_POLY_UAT 0x187
+
+/*
  * Generate a GF(256) from the supplied primitive polynomial
  */
 static void gen256(unsigned char dst[256], unsigned int prim_poly)
@@ -319,6 +325,11 @@ static void gen256(unsigned char dst[256], unsigned int prim_poly)
 	 * The primitive polynomial must have x^8 set.
 	 */
 	assert((prim_poly & 0x100) != 0);
+
+	/*
+	 * XXX Verify and assert that alpha (that is, 0x02) is a root
+	 * of the primitive polynomial.
+	 */
 
 	/*
 	 * First, precompute the identity for alpha^8.
@@ -462,6 +473,18 @@ int main(int argc, char **argv)
 		fprintf(stderr,
 		    TAG ": Generated GF(256) over 0x%03x failed uniqueness\n",
 		    GF256_POLY_LC);
+		exit(1);
+	}
+
+	/*
+	 * Test if generation of UAT's field succeeds. Obviously, we don't
+	 * have a sample, but at least this runs validity checks.
+	 */
+	gen256(field, GF256_POLY_UAT);
+	if (!check_unique_256(field)) {
+		fprintf(stderr,
+		    TAG ": Generated GF(256) over 0x%03x failed uniqueness\n",
+		    GF256_POLY_UAT);
 		exit(1);
 	}
 
