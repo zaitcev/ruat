@@ -1,11 +1,24 @@
+ruat version 0.1
 The idea here is to make something like dump1090, but for UAT.
 
-Getting a good dongle and a good antenna is critical. The Maxlen has
-to be 4452. If it's less than that, the dongle isn't keeping sync
-or the antenna is not good enough.
+The typical output looks like this (uplink lines are very long, and
+this example is truncated!):
 
-Make sure to test with maximum gain. Run rtl_test to identify the maximum
-gain, then set it with -g XX (-g 42 for Elonics, -g 49 for R820T).
+  +3215fb689a02a090000000000000000000000 ....... 00000000000000000000000000;
+  -0aa4c7aa3306f968e3f6149810522d606f2f5c012da2040b8a9502a0001510000000;
+  -0aa4c7aa3306ef68e3b6149810462d602f2f5c012da2040b8a9502a0001510000000;
+  Samples 20840448 dT 10003402 Bits 4246373 Maxlen 4452 Syncs a:6 u:6
+
+Lines staring with + and - are Uplink and ADS-B messages. Everything
+else are periodic messages about the performance of ruat. The most
+interesting is Maxlen, the number of consequetive bits. It should be
+4452 for a valid Uplink packet. If you get less, it means the dongle
+isn't keeping sync or the antenna is not good enough. If you see 15 to 20,
+it means you aren't receiving anything at all.
+
+If you are away from an airplane, make sure to test with maximum gain.
+Run rtl_test to identify the maximum gain, then set it with -g XX
+(-g 42 for Elonics, -g 49 for R820T).
 
 TODO
  - switch to fixed point, we're still on 11% CPU
