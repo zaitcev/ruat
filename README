@@ -1,4 +1,4 @@
-ruat version 0.1
+ruat version 0.1.dev
 The idea here is to make something like dump1090, but for UAT.
 
 The typical output looks like this (uplink lines are very long, and
