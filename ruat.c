@@ -51,6 +51,7 @@ struct ss_stat {
 
 struct param {
 	int gain;
+	int raw;
 	int verbose;		/* XXX Currently does nothing */
 	int dump_interval;	/* seconds */
 };
@@ -89,12 +90,15 @@ static void preload_phi(void);
 static void alloc_fbuf(struct fbuf bufv[]);
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
-static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t);
+static void stats_dump(struct ss_stat *sp, unsigned long t);
 static void stats_reset(struct ss_stat *sp, unsigned long t);
 static int to_phi(double *fbuf, unsigned char *buf, int len);
 static void scan_init(struct scan *ssp);
 static void scan_fbuf(struct scan *ssp, struct ss_stat *stp, struct fbuf *p);
 static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended);
+static void scan_endbuf_save(struct scan *ssp, char *s, unsigned int wanted);
+static void packet_active_short(char *bits);
+static void packet_active_long(char *bits);
 static void packet_uplink(char *bits);
 static void params(struct param *, int argc, char **argv);
 static void Usage(void);
@@ -115,13 +119,13 @@ static int rx_die;
 static int rx_nbufs, rx_in, rx_out;
 static struct fbuf rx_bufs[NBUFS];
 
+static struct param par;
 #if 1
 static double iq_to_phi[256][256];
 #endif
 
 int main(int argc, char **argv)
 {
-	struct param par;
 	unsigned int device_count, devx;
 	char manuf[BUF_MAX], prod[BUF_MAX], sernum[BUF_MAX];
 	int ppm_error = 0;
@@ -223,7 +227,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	rc = pthread_create(&rx_thread, NULL, rx_worker, &par);
+	rc = pthread_create(&rx_thread, NULL, rx_worker, NULL);
 	if (rc != 0) {
 		fprintf(stderr, TAG ": Error in pthread_create: %d\n", rc);
 		exit(1);
@@ -318,7 +322,6 @@ static void alloc_fbuf(struct fbuf bufv[])
 
 static void *rx_worker(void *arg)
 {
-	struct param *par = arg;
 	struct scan sstate;
 	struct ss_stat stats;
 	struct timeval now;
@@ -358,8 +361,8 @@ static void *rx_worker(void *arg)
 
 		gettimeofday(&now, NULL);
 		t = (unsigned long)now.tv_sec * 1000000 + now.tv_usec;
-		if (t - stats.mark >= par->dump_interval*1000000) {
-			stats_dump(&stats, par, t);
+		if (t - stats.mark >= par.dump_interval*1000000) {
+			stats_dump(&stats, t);
 			stats_reset(&stats, t);
 		}
 
@@ -377,7 +380,7 @@ static void *rx_worker(void *arg)
 	return NULL;
 }
 
-static void stats_dump(struct ss_stat *sp, struct param *par, unsigned long t)
+static void stats_dump(struct ss_stat *sp, unsigned long t)
 {
 
 	printf("Samples %lu dT %lu"
@@ -559,10 +562,28 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 		/* We have a packet, print it, spill its bits, restart scan */
 		if (ssp->bwanted == BITS_UPLINK) {
 			packet_uplink(ssp->bits);
+			off = BITS_UPLINK;
+		} else if (ssp->bwanted == BITS_ACTIVE_L) {
+			packet_active_long(ssp->bits);
+			off = BITS_ACTIVE_L;
+		} else if (ssp->bwanted == BITS_ACTIVE_S) {
+			if (memcmp(ssp->bits, "00000", 5) == 0) {
+				packet_active_short(ssp->bits);
+				off = BITS_ACTIVE_S;
+			} else {
+				if (ssp->bfill >= BITS_ACTIVE_L) {
+					packet_active_long(ssp->bits);
+					off = BITS_ACTIVE_L;
+				} else {
+					/* junk bits */
+					off = 0;
+				}
+			}
 		} else {
-			printf("a\n");
+			fprintf(stderr, TAG ": Internal error 6: %d\n",
+			    ssp->bwanted);
+			exit(1);
 		}
-		off = ssp->bwanted;
 		ssp->bwanted = 0;
 	}
 
@@ -583,6 +604,45 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 		if (memcmp(s, sync_bits_a, NBITS) == 0) {
 			stp->goodsynca++;
 			s += NBITS;
+			if (s + BITS_ACTIVE_S <= end) {
+				/*
+				 * Now we have to peek inside a packet that
+				 * is not error-corrected yet. Good job, ICAO.
+				 * See Doc.9861 2.1.2.
+				 */
+				if (memcmp(s, "00000", 5) == 0) {
+					/* short */
+					packet_active_short(s);
+					s += BITS_ACTIVE_S;
+				} else {
+					/* long */
+					if (s + BITS_ACTIVE_L <= end) {
+						packet_active_long(s);
+						s += BITS_ACTIVE_L;
+					} else {
+						if (ended) {
+							/* truncated */
+							ssp->bfill = 0;
+							break;
+						}
+						scan_endbuf_save(ssp, s,
+						    BITS_ACTIVE_L);
+						break;
+					}
+				}
+			} else {
+				if (ended) {
+					/* not even a short one - truncated */
+					ssp->bfill = 0;
+					break;
+				}
+				/*
+				 * We don't know which one this is yet,
+				 * ask short.
+				 */
+				scan_endbuf_save(ssp, s, BITS_ACTIVE_S);
+				break;
+			}
 		} else if (memcmp(s, sync_bits_u, NBITS) == 0) {
 			stp->goodsyncu++;
 			s += NBITS;
@@ -592,15 +652,7 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 					ssp->bfill = 0;
 					break;
 				}
-				if (end-s >= ssp->bfill) {
-					fprintf(stderr,
-					    TAG ": Internal error 5: %d %ld\n",
-					    ssp->bfill, (long)(end-s));
-					exit(1);
-				}
-				ssp->bfill = end - s;
-				memmove(ssp->bits, s, ssp->bfill);
-				ssp->bwanted = BITS_UPLINK;
+				scan_endbuf_save(ssp, s, BITS_UPLINK);
 				break;
 			}
 			packet_uplink(s);
@@ -612,32 +664,107 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 }
 
 /*
+ * We end here when we need more bits, but the bit buffer does not have them,
+ * and the transmission has not ended yet. So, save the remaining bits
+ * into the head of the buffer, and set ssp->wanted for the next time.
+ */
+static void scan_endbuf_save(struct scan *ssp, char *s, unsigned int wanted)
+{
+	char *end = ssp->bits + ssp->bfill;
+
+	/*
+	 * This looks like we are checking for overlap, and this condition
+	 * looks like it may be valid. But the real objective here is to
+	 * guard against looping, which may only happen if we save more
+	 * than we process. Looping is a pain to debug. We make sure this
+	 * can never happen by keeping the bit buffer size longer than
+	 * 2 times the size of longest packet.
+	 */
+	if (end-s >= ssp->bfill) {
+		fprintf(stderr, TAG ": Internal error 5: %d %ld\n",
+		    ssp->bfill, (long)(end-s));
+		exit(1);
+	}
+
+	ssp->bfill = end - s;
+	memmove(ssp->bits, s, ssp->bfill);
+	ssp->bwanted = wanted;
+}
+
+static void packet_active_short(char *bits)
+{
+	unsigned char packet[BITS_ACTIVE_S/8];
+	int i;
+
+	for (i = 0; i < BITS_ACTIVE_S/8; i++) {
+		packet[i] = PICK_BYTE(bits); bits += 8;
+	}
+	if (par.raw) {
+		printf("-");
+		for (i = 0; i < 18; i++)
+			printf("%02x", packet[i]);
+		printf(";\n");
+	} else {
+		printf("as\n");
+	}
+}
+
+static void packet_active_long(char *bits)
+{
+	unsigned char packet[BITS_ACTIVE_L/8];
+	int i;
+
+	for (i = 0; i < BITS_ACTIVE_L/8; i++) {
+		packet[i] = PICK_BYTE(bits); bits += 8;
+	}
+	if (par.raw) {
+		printf("-");
+		for (i = 0; i < 34; i++)
+			printf("%02x", packet[i]);
+		printf(";\n");
+	} else {
+		printf("al\n");
+	}
+}
+
+/*
  * See Annex 10 Volume III 12.4.4.2.2.3 for the interleaving procedure.
  *
  *  bits: A bit buffer of length BITS_UPLINK
  */
 static void packet_uplink(char *bits)
 {
-	unsigned char packet[BITS_UPLINK/8];
+	unsigned char packet[BITS_UPLINK/8], *p;
 	unsigned char d;
-	int i;
+	int i, j;
 
 	for (i = 0; i < BITS_UPLINK/8; i++) {
 		d = PICK_BYTE(bits); bits += 8;
 		packet[(i%6) * (BITS_U_STEP/8) + (i/6)] = d;
 	}
 
-	/*
-	 * XXX This syntax differs from the dump978 standard because FEC
-	 * is not applied yet.
-	 */
-	printf("u");
-	for (i = 0; i < BITS_UPLINK/8; i++) {
-		if (i % 92 == 0)
-			printf(" ");
-		printf("%02x", packet[i]);
+	if (par.raw) {
+		printf("+");
+		for (i = 0; i < 6; i++) {
+			p = packet + i*92;
+			for (j = 0; j < 72; j++) {
+				printf("%02x", p[j]);
+			}
+		}
+		printf(";");
+#if 0 /* P3 */
+		printf(" fec=");
+		for (i = 0; i < 6; i++) {
+			p = packet + i*92 + 72;
+			for (j = 0; j < 20; j++) {
+				printf("%02x", p[j]);
+			}
+		}
+#endif
+		printf("\n");
+	} else {
+		printf("u\n"); /* P3 */
 	}
-	printf("\n");
 }
 
 static void params(struct param *par, int argc, char **argv)
@@ -646,6 +773,7 @@ static void params(struct param *par, int argc, char **argv)
 	long n;
 
 	par->gain = (~0);
+	par->raw = 0;
 	par->verbose = 0;
 	par->dump_interval = 10;
 
@@ -671,6 +799,8 @@ static void params(struct param *par, int argc, char **argv)
 					exit(1);
 				}
 				par->gain = n;
+			} else if (arg[1] == 'r') {
+				par->raw = 1;
 			} else if (arg[1] == 'v') {
 				par->verbose = 1;
 			} else {
@@ -684,7 +814,7 @@ static void params(struct param *par, int argc, char **argv)
 
 static void Usage(void)
 {
-	printf("Usage: " TAG " [-v] [-d interval] [-g gain]\n");
+	fprintf(stderr, "Usage: " TAG " [-v] [-r] [-d interval] [-g gain]\n");
 	exit(1);
 }
 
