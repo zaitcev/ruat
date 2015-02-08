@@ -604,33 +604,7 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 		if (memcmp(s, sync_bits_a, NBITS) == 0) {
 			stp->goodsynca++;
 			s += NBITS;
-			if (s + BITS_ACTIVE_S <= end) {
-				/*
-				 * Now we have to peek inside a packet that
-				 * is not error-corrected yet. Good job, ICAO.
-				 * See Doc.9861 2.1.2.
-				 */
-				if (memcmp(s, "00000", 5) == 0) {
-					/* short */
-					packet_active_short(s);
-					s += BITS_ACTIVE_S;
-				} else {
-					/* long */
-					if (s + BITS_ACTIVE_L <= end) {
-						packet_active_long(s);
-						s += BITS_ACTIVE_L;
-					} else {
-						if (ended) {
-							/* truncated */
-							ssp->bfill = 0;
-							break;
-						}
-						scan_endbuf_save(ssp, s,
-						    BITS_ACTIVE_L);
-						break;
-					}
-				}
-			} else {
+			if (s + BITS_ACTIVE_S > end) {
 				if (ended) {
 					/* not even a short one - truncated */
 					ssp->bfill = 0;
@@ -642,6 +616,27 @@ static void scan_spill(struct scan *ssp, struct ss_stat *stp, int ended)
 				 */
 				scan_endbuf_save(ssp, s, BITS_ACTIVE_S);
 				break;
+			}
+			/*
+			 * Now we have to peek inside a packet that
+			 * is not error-corrected yet. Good job, ICAO.
+			 * See Doc.9861 2.1.2.
+			 */
+			if (memcmp(s, "00000", 5) == 0) {	/* short */
+				packet_active_short(s);
+				s += BITS_ACTIVE_S;
+			} else {				/* long */
+				if (s + BITS_ACTIVE_L > end) {
+					if (ended) {
+						/* truncated */
+						ssp->bfill = 0;
+						break;
+					}
+					scan_endbuf_save(ssp, s, BITS_ACTIVE_L);
+					break;
+				}
+				packet_active_long(s);
+				s += BITS_ACTIVE_L;
 			}
 		} else if (memcmp(s, sync_bits_u, NBITS) == 0) {
 			stp->goodsyncu++;
