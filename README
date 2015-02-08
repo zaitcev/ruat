@@ -1,6 +1,9 @@
 ruat version 0.1.dev
 The idea here is to make something like dump1090, but for UAT.
 
+We now have dump978, and ruat mostly offers historic interest. See:
+ https://github.com/mutability/dump978
+
 The typical output looks like this (uplink lines are very long, and
 this example is truncated!):
 
