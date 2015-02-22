@@ -6,6 +6,8 @@
 #include <stdlib.h>
 // #include <string.h>
 
+#include "fec.h"
+
 #define TAG "tester"
 
 /*
@@ -312,101 +314,15 @@ static char gf256_8_4_3_2_0[256][8] = {
  */
 #define GF256_POLY_UAT 0x187
 
-/*
- * Generate a GF(256) from the supplied primitive polynomial
- */
-static void gen256(unsigned char dst[256], unsigned int prim_poly)
-{
-	unsigned int identity;
-	int i;
-	unsigned int v;
-
-	/*
-	 * The primitive polynomial must have x^8 set.
-	 */
-	assert((prim_poly & 0x100) != 0);
-
-	/*
-	 * XXX Verify and assert that alpha (that is, 0x02) is a root
-	 * of the primitive polynomial.
-	 */
-
-	/*
-	 * First, precompute the identity for alpha^8.
-	 * Apparently, this is done by adding alpha^8 (0x100 modulo 2) to
-	 * both sides of the poly, and then using alpha^i + alpha^i == 0.
-	 * Result is, we just chop off the extra bit.
-	 */
-	identity = prim_poly & 0xff;
-
-	/*
-	 * Then, set the elements of GF(2), which also serve as certain
-	 * elements for addition and multiplication. Either way, constants.
-	 */
-	dst[0] = 0;
-	dst[1] = 1;
-
-	/*
-	 * Now, run the generator machinery for each extension element.
-	 *
-	 * The key observation is that each next step can be a multiplication:
-	 *   alpha^(i+1) == alpha * alpha^i
-	 * But, if we open the parenthesii, it amounts to incrementing the
-	 * power of each member of the poly by 1. Which is shift left by 1.
-	 * And, if the shift produces an alpha^8, we substitute identity
-	 * and add (xor, of course).
-	 *
-	 * Finally, shift happens to work for smaller powers of alpha, too.
-	 * So, we start from i=2 instead of i=8.
-	 */
-	v = 1;
-	for (i = 2; i < 256; i++) {
-		v <<= 1;
-		if (v & 0x100) {
-			v &= 0xff;
-			v ^= identity;
-		}
-		dst[i] = v;
-	}
-}
-
-/*
- * Check a GF(256) field for uniqueness
- *
- * Returns true if unique, false otherwise.
- */
-static int check_unique_256(unsigned char field[256])
-{
-	int error = 0;
-	short int index[256];	/* indices (or alpha power + 1) by element */
-	int i;
-	unsigned int e;
-	int x;
-
-	for (i = 0; i < 256; i++)
-		index[i] = -1;
-
-	for (i = 0; i < 256; i++) {
-		e = field[i];
-		x = index[e];
-		if (x != -1) {
-			fprintf(stderr, TAG ": dup [%d]:0x%02x [%d]:0x%02x\n",
-			    i, e, x, field[x]);
-			error = 1;
-		}
-		index[e] = i;
-	}
-
-	return error == 0;
-}
-
 int main(int argc, char **argv)
 {
-	unsigned char field[256], sample[256];
+	unsigned char sample[256];
+	struct gf field;
 	char *p;
 	unsigned int v;
 	int i, j;
 	int error;
+	int rc;
 
 #if 0
 	char buf[9];
@@ -449,7 +365,12 @@ int main(int argc, char **argv)
 		}
 	}
 
-	gen256(field, GF256_POLY_LC);
+	rc = gf_init(&field, GF256_POLY_LC);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_LC, rc);
+		exit(1);
+	}
 
 	error = 0;
 	for (i = 0; i < 256; i++) {
@@ -458,10 +379,10 @@ int main(int argc, char **argv)
 		 * the book, so we only compare to the known elements.
 		 */
 		if (gf256_8_4_3_2_0[i][0] != 0) {
-			if (sample[i] != field[i]) {
+			if (sample[i] != field.field[i]) {
 				fprintf(stderr, TAG ": "
 				    "mismatch [%d] 0x%02x 0x%02x\n",
-				    i, sample[i], field[i]);
+				    i, sample[i], field.field[i]);
 				error = 1;
 			}
 		}
@@ -469,24 +390,19 @@ int main(int argc, char **argv)
 	if (error)
 		exit(1);
 
-	if (!check_unique_256(field)) {
-		fprintf(stderr,
-		    TAG ": Generated GF(256) over 0x%03x failed uniqueness\n",
-		    GF256_POLY_LC);
-		exit(1);
-	}
+	gf_fin(&field);
 
 	/*
 	 * Test if generation of UAT's field succeeds. Obviously, we don't
 	 * have a sample, but at least this runs validity checks.
 	 */
-	gen256(field, GF256_POLY_UAT);
-	if (!check_unique_256(field)) {
-		fprintf(stderr,
-		    TAG ": Generated GF(256) over 0x%03x failed uniqueness\n",
-		    GF256_POLY_UAT);
+	rc = gf_init(&field, GF256_POLY_UAT);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
 		exit(1);
 	}
+	gf_fin(&field);
 
 	return 0;
 }

@@ -11,9 +11,11 @@ ruat: ruat.o
 
 ruat.o: ruat.c
 
-tester: tester.o
+tester: tester.o fec.o
 
-tester.o: tester.c
+tester.o: tester.c fec.h
+
+fec.o: fec.h fec.c
 
 check: tester
 	./tester
