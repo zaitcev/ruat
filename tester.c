@@ -10,6 +10,8 @@
 
 #define TAG "tester"
 
+static void test_field_lc(struct gf *f);
+
 /*
  * This is the sample GF(2^8) taken from 1983 Lin & Costello.
  * Its primitive polynomial is p(x)=x^8+x^4+x^3+x^2+1, or 0x11d.
@@ -390,6 +392,8 @@ int main(int argc, char **argv)
 	if (error)
 		exit(1);
 
+	test_field_lc(&field);
+
 	gf_fin(&field);
 
 	/*
@@ -405,4 +409,51 @@ int main(int argc, char **argv)
 	gf_fin(&field);
 
 	return 0;
+}
+
+/*
+ * Since we care about the binary/tuple representation, our tests for
+ * anything but identity, zero, and alpha^1 are dependent on the field.
+ * So, although f is an argument, this can only test the LC field.
+ */
+static void test_field_lc(struct gf *f)
+{
+	struct test1 {
+		unsigned int a;
+		unsigned int b;
+		unsigned int a_by_b;
+	};
+	static struct test1 test_v[] = {
+		{ 0, 0, 0 },
+		{ 0, 1, 0 },
+		{ 1, 0, 0 },
+		{ 1, 1, 1 },
+		{ 0, 2, 0 },		/* 0 * alpha = 0 */
+		{ 2, 0, 0 },
+		{ 1, 2, 2 },		/* 1 * alpha = alpha */
+		{ 2, 1, 2 },		/* 1 * alpha = alpha */
+		{ 2, 2, 4 },		/* alpha * alpha = alpha^2 */
+		{ 0x47, 2, 0x8e },	/* alpha^253 * alpha = alpha^254 */
+		{ 0x8e, 1, 0x8e },
+		{ 0x8e, 2, 1 },		/* alpha^254 * alpha = alpha^0 = 1 */
+		{ 0x8e, 4, 2 }		/* alpha^254 * alpha^2 = alpha */
+	};
+	struct test1 *p;
+	int error = 0;
+	int i;
+	unsigned int res;
+
+	p = test_v;
+	for (i = 0; i < sizeof(test_v)/sizeof(struct test1); i++) {
+		res = gf_mult(f, p->a, p->b);
+		if (res != p->a_by_b) {
+			fprintf(stderr, TAG ": "
+			    "gf_mult(0x%x, 0x%x) expected 0x%x actual 0x%x\n",
+			    p->a, p->b, p->a_by_b, res);
+			error = 1;
+		}
+		p++;
+	}
+	if (error)
+		exit(1);
 }

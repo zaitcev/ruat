@@ -161,3 +161,22 @@ static int genx(unsigned char dst[256], unsigned char field[256])
 
 	return (error == 0)? 0: -1;
 }
+
+/*
+ * Both a and b are in binary (tuple) representation, of course.
+ */
+unsigned int gf_mult(struct gf *f, unsigned int a, unsigned int b)
+{
+	unsigned int a_power, b_power, sum_power;
+
+	if (a == 0 || b == 0)
+		return 0;
+	a_power = f->index[a] - 1;
+	b_power = f->index[b] - 1;
+
+	sum_power = a_power + b_power;
+	if (sum_power < 255)
+		return f->field[sum_power + 1];
+	sum_power -= 255;
+	return f->field[sum_power + 1];
+}

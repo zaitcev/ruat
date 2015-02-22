@@ -13,3 +13,4 @@ struct gf {
 
 int gf_init(struct gf *f, unsigned short gen_poly);
 void gf_fin(struct gf *f);
+unsigned int gf_mult(struct gf *f, unsigned int a, unsigned int b);
