@@ -4,13 +4,16 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
-// #include <string.h>
+#include <string.h>
 
 #include "fec.h"
 
 #define TAG "tester"
 
+static void test_gen_lc(void);
 static void test_field_lc(struct gf *f);
+static void test_gen_uat(void);
+static void test_gen_gen(void);
 
 /*
  * This is the sample GF(2^8) taken from 1983 Lin & Costello.
@@ -318,14 +321,6 @@ static char gf256_8_4_3_2_0[256][8] = {
 
 int main(int argc, char **argv)
 {
-	unsigned char sample[256];
-	struct gf field;
-	char *p;
-	unsigned int v;
-	int i, j;
-	int error;
-	int rc;
-
 #if 0
 	char buf[9];
 
@@ -338,8 +333,24 @@ int main(int argc, char **argv)
 	buf[8] = 0;
 	printf("%s\n", buf);
 #endif
+	test_gen_lc();
+	test_gen_uat();
+	test_gen_gen();
+	return 0;
+}
+
+static void test_gen_lc(void)
+{
+	unsigned char sample[256];
+	struct gf field;
+	char *p;
+	unsigned int v;
+	int i, j;
+	int error;
+	int rc;
 
 	/*
+	 * Test #1
 	 * Test if gen256 with a known poly generates a known field.
 	 *
 	 * Since the sample field is not complete, we also test the generated
@@ -395,20 +406,6 @@ int main(int argc, char **argv)
 	test_field_lc(&field);
 
 	gf_fin(&field);
-
-	/*
-	 * Test if generation of UAT's field succeeds. Obviously, we don't
-	 * have a sample, but at least this runs validity checks.
-	 */
-	rc = gf_init(&field, GF256_POLY_UAT);
-	if (rc != 0) {
-		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
-		    GF256_POLY_UAT, rc);
-		exit(1);
-	}
-	gf_fin(&field);
-
-	return 0;
 }
 
 /*
@@ -456,4 +453,72 @@ static void test_field_lc(struct gf *f)
 	}
 	if (error)
 		exit(1);
+}
+
+static void test_gen_uat(void)
+{
+	struct gf field;
+	int rc;
+
+	/*
+	 * Test if generation of UAT's field succeeds. Obviously, we don't
+	 * have a sample, but at least this runs validity checks.
+	 */
+	rc = gf_init(&field, GF256_POLY_UAT);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+	gf_fin(&field);
+}
+
+static void test_gen_gen(void)
+{
+	/*
+	 * For some reason, the poly from Lin&Costello is popular,
+	 * and samples for its generator are easy to find.
+	 */
+	static unsigned char sample[5] = { 0x01, 0x0f, 0x36, 0x78, 0x40 };
+
+	struct gf field;
+	unsigned char buf[7];
+	int rc;
+
+	gf_init(&field, 0x11d);
+
+	/*
+	 * Surround the buffer with tripwire. Obviously it's not going to
+	 * catch every concievable memory scribble, but better than nothing.
+	 */
+	memset(buf, 0xe5, 7);
+
+	rc = p_gen_gen(&field, buf+1, 0, 4);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": p_gen_gen(0x%x,0,4) error: %d\n",
+		    GF256_POLY_LC, rc);
+		exit(1);
+	}
+
+	if (buf[0] != 0xe5 || buf[6] != 0xe5) {
+		fprintf(stderr, TAG ": "
+		    "p_gen_gen(0x%x,0,4) destination overflow\n",
+		    GF256_POLY_LC);
+		exit(1);
+	}
+	if (memcmp(buf+1, sample, 5) != 0) {
+		fprintf(stderr, TAG ": "
+		    "p_gen_gen(0x%x,0,4) sample mismatch\n",
+		    GF256_POLY_LC);
+#if 0
+		int i;
+		for (i = 1; i < 6; i++) {
+			printf(" %02x", buf[i]);
+		}
+		printf("\n");
+#endif
+		exit(1);
+	}
+
+	gf_fin(&field);
 }

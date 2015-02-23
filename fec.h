@@ -13,4 +13,8 @@ struct gf {
 
 int gf_init(struct gf *f, unsigned short gen_poly);
 void gf_fin(struct gf *f);
+unsigned int gf_add(struct gf *f, unsigned int a, unsigned int b);
 unsigned int gf_mult(struct gf *f, unsigned int a, unsigned int b);
+int p_gen_gen(struct gf *f, unsigned char *dst, int start_power, int end_power);
+void p_mul(struct gf *f, unsigned char *dst, int alen, int blen,
+    unsigned char *pa, unsigned char *pb);
