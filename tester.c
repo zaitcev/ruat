@@ -13,7 +13,10 @@
 static void test_gen_lc(void);
 static void test_field_lc(struct gf *f);
 static void test_gen_uat(void);
-static void test_gen_gen(void);
+static void test_gen_gen_qrc(void);
+static void test_gen_gen_uat(void);
+static void test_gen_gen(unsigned int poly, int rpow, int len,
+    unsigned char *sample);
 
 /*
  * This is the sample GF(2^8) taken from 1983 Lin & Costello.
@@ -335,7 +338,8 @@ int main(int argc, char **argv)
 #endif
 	test_gen_lc();
 	test_gen_uat();
-	test_gen_gen();
+	test_gen_gen_qrc();
+	test_gen_gen_uat();
 	return 0;
 }
 
@@ -473,52 +477,85 @@ static void test_gen_uat(void)
 	gf_fin(&field);
 }
 
-static void test_gen_gen(void)
+static void test_gen_gen_qrc(void)
 {
 	/*
 	 * For some reason, the poly from Lin&Costello is popular,
 	 * and samples for its generator are easy to find.
+	 * This particular poly is used by QR-codes, apparently.
 	 */
 	static unsigned char sample[5] = { 0x01, 0x0f, 0x36, 0x78, 0x40 };
+	test_gen_gen(0x11d, 0, 5, sample);
+}
 
+static void test_gen_gen_uat(void)
+{
+	/*
+	 * Finding the poly sample for UAT is basically impossible,
+	 * so we're using the actual poly that David Carr's receiver
+	 * calculates in its operation. Its length is 21, even though
+	 * the spec calls for roots for power of alpha from 120 to 139
+	 * inclusive (20 roots). It's a mystery why this works.
+	 */
+	static unsigned char sample[21] = {
+	    0x01, 0x9b, 0x91, 0x8c, 0x91, 0xe1, 0x4f, 0x0c, 0x7c, 0x91,
+	    0x6c, 0x3a, 0xa2, 0x8e, 0x42, 0xcb, 0x37, 0x80, 0x7b, 0xb4,
+	    0x62
+	};
+	test_gen_gen(GF256_POLY_UAT, 120, 21, sample);
+}
+
+static void test_gen_gen(unsigned int poly, int rpow, int len,
+    unsigned char *sample)
+{
+	int rpow_end = rpow + len - 1;
 	struct gf field;
-	unsigned char buf[7];
+	unsigned char *buf;
 	int rc;
 
-	gf_init(&field, 0x11d);
+	buf = malloc(len + 2);
+	if (!buf) {
+		fprintf(stderr, TAG ": No core\n");
+		exit(1);
+	}
+
+	gf_init(&field, poly);
 
 	/*
 	 * Surround the buffer with tripwire. Obviously it's not going to
 	 * catch every concievable memory scribble, but better than nothing.
 	 */
-	memset(buf, 0xe5, 7);
+	memset(buf, 0xe5, len+2);
 
-	rc = p_gen_gen(&field, buf+1, 0, 4);
+	rc = p_gen_gen(&field, buf+1, rpow, rpow_end);
 	if (rc != 0) {
-		fprintf(stderr, TAG ": p_gen_gen(0x%x,0,4) error: %d\n",
-		    GF256_POLY_LC, rc);
+		fprintf(stderr, TAG ": p_gen_gen(0x%x,%d,%d) error: %d\n",
+		    poly, rpow, rpow_end, rc);
 		exit(1);
 	}
 
-	if (buf[0] != 0xe5 || buf[6] != 0xe5) {
+	if (buf[0] != 0xe5 || buf[len+1] != 0xe5) {
 		fprintf(stderr, TAG ": "
-		    "p_gen_gen(0x%x,0,4) destination overflow\n",
-		    GF256_POLY_LC);
-		exit(1);
+		    "p_gen_gen(0x%x,%d,%d) destination overflow\n",
+		    poly, rpow, rpow_end);
+		// exit(1);
 	}
-	if (memcmp(buf+1, sample, 5) != 0) {
-		fprintf(stderr, TAG ": "
-		    "p_gen_gen(0x%x,0,4) sample mismatch\n",
-		    GF256_POLY_LC);
-#if 0
-		int i;
-		for (i = 1; i < 6; i++) {
-			printf(" %02x", buf[i]);
+#if 0 /* P3 */
+	{
+		int n;
+		for (n = 0; n < len+2; n++) {
+			printf(" %02x", buf[n]);
 		}
 		printf("\n");
+	}
 #endif
+	if (memcmp(buf+1, sample, len) != 0) {
+		fprintf(stderr, TAG ": "
+		    "p_gen_gen(0x%x,%d,%d) sample mismatch\n",
+		    poly, rpow, rpow_end);
 		exit(1);
 	}
 
 	gf_fin(&field);
+	free(buf);
 }

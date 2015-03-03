@@ -192,7 +192,7 @@ unsigned int gf_mult(struct gf *f, unsigned int a, unsigned int b)
  * starting with alpha^120 instead of 1.
  *
  *   f: pointer to the field
- *   dst: output of size [end_power+1]
+ *   dst: output of size [end_power-start_power+1]
  *   start_power: power of first root - may be 0
  *   end_power: power of last root
  */
@@ -210,21 +210,22 @@ int p_gen_gen(struct gf *f, unsigned char *dst, int start_power, int end_power)
 	}
 
 	/* Seed the first member of the polynomial, (X - alpha^0). */
-	for (j = 0; j < end_power+1; j++) {
+	for (j = 0; j < (end_power-start_power)+1; j++) {
 		dst[j] = 0xff;
 	}
-	dst[end_power] = 1;
+	dst[end_power-start_power] = 1;
 
 	for (i = start_power; i < end_power; i++) {
-		for (j = 0; j < end_power+1; j++) {
-			arg1[(255-(end_power+1)) + j] = dst[j];
+		for (j = 0; j < (end_power-start_power)+1; j++) {
+			arg1[(255-((end_power-start_power)+1)) + j] = dst[j];
 		}
 
 		arg2[0] = 1;			/* X */
-		arg2[1] = f->field[start_power + i+1];
+		arg2[1] = f->field[i+1];
 
 		p_mul(f, &dst[end_power-1 - i],
-		    1 + i, 2, &arg1[255 - (i+1)], arg2);
+		    1 + i-start_power, &arg1[255 - (i-start_power+1)],
+		    2, arg2);
 	}
 	return 0;
 }
@@ -243,8 +244,8 @@ int p_gen_gen(struct gf *f, unsigned char *dst, int start_power, int end_power)
  *   pa: polynomial a with max power of X ^ (alen-1) at pa[0]
  *   pb: polynomial a with max power of X ^ (blen-1) at pb[0]
  */
-void p_mul(struct gf *f, unsigned char *dst, int alen, int blen,
-    unsigned char *pa, unsigned char *pb)
+void p_mul(struct gf *f, unsigned char *dst,
+    int alen, unsigned char *pa, int blen, unsigned char *pb)
 {
 	int i, j;
 	unsigned char pm;
