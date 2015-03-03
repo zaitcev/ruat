@@ -26,3 +26,5 @@ Run rtl_test to identify the maximum gain, then set it with -g XX
 TODO
  - switch to fixed point, we're still on 11% CPU
  - precalc arc-tangents once and link to them at build time
+ - learn from Oliver and get rid of phi buffers entirely; calculate phi,
+   compare with A/U code, unroll the bits with a known odd/even.
