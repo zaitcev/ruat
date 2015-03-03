@@ -216,15 +216,15 @@ int p_gen_gen(struct gf *f, unsigned char *dst, int start_power, int end_power)
 	dst[end_power-start_power] = 1;
 
 	for (i = start_power; i < end_power; i++) {
-		for (j = 0; j < (end_power-start_power)+1; j++) {
-			arg1[(255-((end_power-start_power)+1)) + j] = dst[j];
+		for (j = 0; j < (i-start_power)+1; j++) {
+			arg1[j] = dst[(end_power-i) + j];
 		}
 
 		arg2[0] = 1;			/* X */
 		arg2[1] = f->field[i+1];
 
 		p_mul(f, &dst[end_power-1 - i],
-		    1 + i-start_power, &arg1[255 - (i-start_power+1)],
+		    1 + i-start_power, arg1,
 		    2, arg2);
 	}
 	return 0;
