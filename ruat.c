@@ -133,6 +133,8 @@ static double iq_to_phi[256][256];
 #endif
 static struct gf field;
 static unsigned char gpoly_up[21];
+static unsigned char gpoly_as[12];
+static unsigned char gpoly_al[14];
 
 int main(int argc, char **argv)
 {
@@ -330,8 +332,22 @@ static void init_field(void)
 	 */
 	rc = p_gen_gen(&field, gpoly_up, 120, 140);
 	if (rc != 0) {
-		/* This should not if the builder has run "make check". */
+		/* This should not occur if the builder has run "make check". */
 		fprintf(stderr, TAG ": gf_gen_gen(0x%x,120,140) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	rc = p_gen_gen(&field, gpoly_as, 120, 132);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_gen_gen(0x%x,120,132) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	rc = p_gen_gen(&field, gpoly_al, 120, 134);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_gen_gen(0x%x,120,134) error: %d\n",
 		    GF256_POLY_UAT, rc);
 		exit(1);
 	}
@@ -728,6 +744,7 @@ static void packet_active_short(char *bits)
 {
 	unsigned char packet[BITS_ACTIVE_S/8];
 	int i;
+	unsigned char buf[12];
 
 	for (i = 0; i < BITS_ACTIVE_S/8; i++) {
 		packet[i] = PICK_BYTE(bits); bits += 8;
@@ -736,9 +753,26 @@ static void packet_active_short(char *bits)
 		printf("-");
 		for (i = 0; i < 18; i++)
 			printf("%02x", packet[i]);
-		printf(";\n");
+		printf(";");
+#if 1 /* P3 */
+		printf(" fec=");
+		for (i = 0; i < 12; i++) {
+			printf("%02x", packet[18 + i]);
+		}
+#endif
+		printf("\n");
+		fflush(stdout);
 	} else {
-		printf("as\n");
+		p_rem(&field, buf, 12, 18, packet, gpoly_as);
+		if (memcmp(buf, packet + 18, 12) == 0) {
+			printf("-");
+			for (i = 0; i < 18; i++)
+				printf("%02x", packet[i]);
+			printf(";\n");
+			fflush(stdout); /* needed for timely updates in Glie */
+		} else {
+			printf("as\n");
+		}
 	}
 }
 
@@ -746,6 +780,7 @@ static void packet_active_long(char *bits)
 {
 	unsigned char packet[BITS_ACTIVE_L/8];
 	int i;
+	unsigned char buf[14];
 
 	for (i = 0; i < BITS_ACTIVE_L/8; i++) {
 		packet[i] = PICK_BYTE(bits); bits += 8;
@@ -754,9 +789,26 @@ static void packet_active_long(char *bits)
 		printf("-");
 		for (i = 0; i < 34; i++)
 			printf("%02x", packet[i]);
-		printf(";\n");
+		printf(";");
+#if 1 /* P3 */  
+		printf(" fec=");
+		for (i = 0; i < 14; i++) {
+			printf("%02x", packet[34 + i]);
+		}
+#endif
+		printf("\n");
+		fflush(stdout);
 	} else {
-		printf("al\n");
+		p_rem(&field, buf, 14, 34, packet, gpoly_al);
+		if (memcmp(buf, packet + 34, 14) == 0) {
+			printf("-");
+			for (i = 0; i < 34; i++)
+				printf("%02x", packet[i]);
+			printf(";\n");
+			fflush(stdout); /* needed for timely updates in Glie */
+		} else {
+			printf("al\n");
+		}
 	}
 }
 
@@ -787,7 +839,7 @@ static void packet_uplink(char *bits)
 			}
 		}
 		printf(";");
-#if 0 /* P3 */
+#if 1 /* P3 */
 		printf(" fec=");
 		for (i = 0; i < 6; i++) {
 			p = packet + i*92 + 72;
@@ -811,9 +863,8 @@ static void packet_uplink(char *bits)
 			printf("+");
 			for (i = 0; i < 6; i++) {
 				p = packet + i*92;
-				for (j = 0; j < 72; j++) {
+				for (j = 0; j < 72; j++)
 					printf("%02x", p[j]);
-				}
 			}
 			printf(";\n");
 			fflush(stdout);
