@@ -38,7 +38,7 @@
  */
 #define BITS_LEN      10000
 
-#define BITS_ACTIVE_S   210	/* 144 bits data + 96 bits FEC */
+#define BITS_ACTIVE_S   240	/* 144 bits data + 96 bits FEC */
 #define BITS_ACTIVE_L   384	/* 272 bits data + 112 bits FEC */
 #define BITS_UPLINK    4416	/* 3456 bits data + 960 bits FEC */
 #define BITS_U_STEP     736	/* or as they say, 92 8-bit codewords */
