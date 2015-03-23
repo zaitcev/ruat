@@ -21,6 +21,8 @@
  */
 #define DEFAULT_BUF_LENGTH	(16 * 32 * 512)
 
+#include "fec.h"
+
 #define TAG "ruat"
 
 #define UAT_FREQ  978000000	/* carrier or center frequency, Doc 9861 2.2 */
@@ -40,6 +42,12 @@
 #define BITS_ACTIVE_L   384	/* 272 bits data + 112 bits FEC */
 #define BITS_UPLINK    4416	/* 3456 bits data + 960 bits FEC */
 #define BITS_U_STEP     736	/* or as they say, 92 8-bit codewords */
+
+/*
+ * The primitive polynomial of UAT is defined by ICAO Annex 10 Volume III,
+ * 12.4.4.1.3.1 and 12.4.4.2.2.2.1 as p(x) = x^8 + x^7 + x^2 + x + 1, or 0x187.
+ */
+#define GF256_POLY_UAT 0x187
 
 struct ss_stat {
 	unsigned long mark;
@@ -87,6 +95,7 @@ struct fbuf {
 };
 
 static void preload_phi(void);
+static void init_field(void);
 static void alloc_fbuf(struct fbuf bufv[]);
 static void rx_callback(unsigned char *buf, uint32_t len, void *ctx);
 static void *rx_worker(void *arg);
@@ -123,6 +132,8 @@ static struct param par;
 #if 1
 static double iq_to_phi[256][256];
 #endif
+static struct gf field;
+static unsigned char gpoly_up[21];
 
 int main(int argc, char **argv)
 {
@@ -141,6 +152,7 @@ int main(int argc, char **argv)
 	params(&par, argc, argv);
 
 	preload_phi();
+	init_field();
 	alloc_fbuf(rx_bufs);
 
 	device_count = rtlsdr_get_device_count();
@@ -296,6 +308,33 @@ static void preload_phi(void)
 			phi = atan2((double) (vq - 127), (double) (vi - 127));
 			iq_to_phi[vi][vq] = phi;
 		}
+	}
+}
+
+static void init_field(void)
+{
+	int rc;
+
+	rc = gf_init(&field, GF256_POLY_UAT);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	/*
+	 * Ann 10 vol III, 12.4.4.2.2.2.1:
+	 * The generator polynomial shall be as follows:
+	 *   (x - alpha^120)*(x - alpha^121)* ... *(x - alpha^139)
+	 *
+	 * For some odd reason we supply 140 instead of 139 to p_gen_gen().
+	 */
+	rc = p_gen_gen(&field, gpoly_up, 120, 140);
+	if (rc != 0) {
+		/* This should not if the builder has run "make check". */
+		fprintf(stderr, TAG ": gf_gen_gen(0x%x,120,140) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
 	}
 }
 
@@ -731,7 +770,9 @@ static void packet_uplink(char *bits)
 {
 	unsigned char packet[BITS_UPLINK/8], *p;
 	unsigned char d;
+	int ecnt;
 	int i, j;
+	unsigned char buf[20];
 
 	for (i = 0; i < BITS_UPLINK/8; i++) {
 		d = PICK_BYTE(bits); bits += 8;
@@ -758,7 +799,28 @@ static void packet_uplink(char *bits)
 #endif
 		printf("\n");
 	} else {
-		printf("u\n"); /* P3 */
+		ecnt = 0;
+		for (i = 0; i < 6; i++) {
+			p = packet + i*92;
+			p_rem(&field, buf, 20, 72, p, gpoly_up);
+			if (memcmp(buf, p + 72, 20) != 0) {
+				ecnt += 1;
+			}
+		}
+
+		if (ecnt == 0) {
+			printf("+");
+			for (i = 0; i < 6; i++) {
+				p = packet + i*92;
+				for (j = 0; j < 72; j++) {
+					printf("%02x", p[j]);
+				}
+			}
+			printf(";\n");
+			fflush(stdout);
+		} else {
+			printf("u %d\n", ecnt); /* P3 */
+		}
 	}
 }
 

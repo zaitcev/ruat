@@ -7,7 +7,7 @@ LDFLAGS += $(shell pkg-config --libs librtlsdr)
 
 all: ruat
 
-ruat: ruat.o
+ruat: ruat.o fec.o
 
 ruat.o: ruat.c
 
