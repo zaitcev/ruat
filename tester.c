@@ -16,7 +16,13 @@ static void test_gen_uat(void);
 static void test_gen_gen_qrc(void);
 static void test_gen_gen_uat(void);
 static void test_gen_gen(unsigned int poly, int rpow, int len,
-    unsigned char *sample);
+    const unsigned char *sample);
+static void test_rem_qrc(void);
+static void test_rem_uat1(void);
+static void test_rem_uat2(void);
+static void test_rem(int mlen, const unsigned char *msg,
+    unsigned int ppoly, int gplen, const unsigned char *gpoly,
+    const unsigned char *sample);
 
 /*
  * This is the sample GF(2^8) taken from 1983 Lin & Costello.
@@ -324,22 +330,13 @@ static char gf256_8_4_3_2_0[256][8] = {
 
 int main(int argc, char **argv)
 {
-#if 0
-	char buf[9];
-
-	printf("%ld %ld %ld\n",
-	    sizeof(gf256_8_4_3_2_0),
-	    sizeof(gf256_8_4_3_2_0[0]),
-	    sizeof(gf256_8_4_3_2_0[0][0]));
-
-	memcpy(buf, gf256_8_4_3_2_0[8], 8);
-	buf[8] = 0;
-	printf("%s\n", buf);
-#endif
 	test_gen_lc();
 	test_gen_uat();
 	test_gen_gen_qrc();
 	test_gen_gen_uat();
+	test_rem_qrc();
+	test_rem_uat1();
+	test_rem_uat2();
 	return 0;
 }
 
@@ -506,7 +503,7 @@ static void test_gen_gen_uat(void)
 }
 
 static void test_gen_gen(unsigned int poly, int rpow, int len,
-    unsigned char *sample)
+    const unsigned char *sample)
 {
 	int rpow_end = rpow + len - 1;
 	struct gf field;
@@ -538,7 +535,7 @@ static void test_gen_gen(unsigned int poly, int rpow, int len,
 		fprintf(stderr, TAG ": "
 		    "p_gen_gen(0x%x,%d,%d) destination overflow\n",
 		    poly, rpow, rpow_end);
-		// exit(1);
+		exit(1);
 	}
 #if 0 /* P3 */
 	{
@@ -553,6 +550,126 @@ static void test_gen_gen(unsigned int poly, int rpow, int len,
 		fprintf(stderr, TAG ": "
 		    "p_gen_gen(0x%x,%d,%d) sample mismatch\n",
 		    poly, rpow, rpow_end);
+		exit(1);
+	}
+
+	gf_fin(&field);
+	free(buf);
+}
+
+static void test_rem_qrc(void)
+{
+	static unsigned int sample_pp = 0x11d;
+	static unsigned char sample_gp[5] = { 0x01, 0x0f, 0x36, 0x78, 0x40 };
+	static unsigned char sample_msg[3] = { 0x12, 0x34, 0x56 };
+	static unsigned char sample_rem[4] = { 0x37, 0xe6, 0x78, 0xd9 };
+
+	test_rem(sizeof(sample_msg), sample_msg,
+	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+}
+
+static void test_rem_uat1(void)
+{
+	static unsigned int sample_pp = GF256_POLY_UAT;
+	static unsigned char sample_gp[21] = {
+	    0x01, 0x9b, 0x91, 0x8c, 0x91, 0xe1, 0x4f, 0x0c, 0x7c, 0x91,
+	    0x6c, 0x3a, 0xa2, 0x8e, 0x42, 0xcb, 0x37, 0x80, 0x7b, 0xb4,
+	    0x62
+	};
+	static unsigned char sample_msg[72] = {
+	    0x32, 0x15, 0xfb, 0x68, 0x9a, 0x02, 0xa1, 0x90, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	    0x00, 0x00
+	};
+	static unsigned char sample_rem[20] = {
+	    0xc5, 0xb7, 0x01, 0x05, 0x22, 0xee, 0x4e, 0xcf, 0x7e, 0xb9,
+	    0xf7, 0x97, 0xce, 0x8c, 0xf7, 0x7e, 0xcb, 0x7e, 0x99, 0xcc
+	};
+
+	test_rem(sizeof(sample_msg), sample_msg,
+	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+}
+
+static void test_rem_uat2(void)
+{
+	static unsigned int sample_pp = GF256_POLY_UAT;
+	static unsigned char sample_gp[21] = {
+	    0x01, 0x9b, 0x91, 0x8c, 0x91, 0xe1, 0x4f, 0x0c, 0x7c, 0x91,
+	    0x6c, 0x3a, 0xa2, 0x8e, 0x42, 0xcb, 0x37, 0x80, 0x7b, 0xb4,
+	    0x62
+	};
+	static unsigned char sample_msg[72] = {
+	    0x32, 0x15, 0xfb, 0x68, 0x9a, 0x02, 0xb3, 0x90, 0x51, 0x00,
+	    0x00, 0x2d, 0x0f, 0xc5, 0x68, 0x82, 0x10, 0x00, 0x00, 0x00,
+	    0xff, 0x25, 0xce, 0x81, 0x1e, 0x00, 0x00, 0x00, 0x00, 0xef,
+	    0xd3, 0x15, 0x01, 0x1f, 0x02, 0x2d, 0x01, 0x1f, 0x09, 0x00,
+	    0xb9, 0xb9, 0x23, 0xb5, 0x88, 0xdc, 0xb7, 0x7f, 0x63, 0xae,
+	    0x54, 0xdc, 0xb7, 0x75, 0x03, 0x4a, 0xdc, 0xdc, 0xb6, 0xbd,
+	    0xa3, 0x4b, 0x74, 0xdc, 0xb6, 0xc2, 0xa3, 0x09, 0xf0, 0xdc,
+	    0xb9, 0xf4
+	};
+	static unsigned char sample_rem[20] = {
+	    0x51, 0xd9, 0x87, 0xd6, 0x34, 0xbe, 0xec, 0x6d, 0x7e, 0xdf,
+	    0xd4, 0xb9, 0x45, 0x4a, 0x92, 0xc7, 0x5a, 0xa2, 0x04, 0x8f
+	};
+
+	test_rem(sizeof(sample_msg), sample_msg,
+	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+}
+
+/*
+ * Since we have tested gen_gen above, we should be able to generate
+ * what is taken by gpoly[] argument from ppoly and gplen. But we focus
+ * on testing p_rem() for now and use pre-cooked poly from samples above.
+ */
+static void test_rem(int mlen, const unsigned char *msg,
+    unsigned int ppoly, int gplen, const unsigned char *gpoly,
+    const unsigned char *sample)
+{
+	int rlen = gplen - 1;
+	struct gf field;
+	unsigned char *buf;
+
+	buf = malloc(rlen + 2);
+	if (!buf) {
+		fprintf(stderr, TAG ": No core\n");
+		exit(1);
+	}
+
+	gf_init(&field, ppoly);
+
+	/*
+	 * Surround the buffer with tripwire. Obviously it's not going to
+	 * catch every concievable memory scribble, but better than nothing.
+	 */
+	memset(buf, 0xe5, rlen+2);
+
+	p_rem(&field, buf+1, rlen, mlen, msg, gpoly);
+
+	if (buf[0] != 0xe5 || buf[rlen+1] != 0xe5) {
+		fprintf(stderr, TAG ": "
+		    "p_rem(0x%x,%d,...) destination overflow\n",
+		    ppoly, rlen);
+		exit(1);
+	}
+#if 0 /* P3 */
+	{
+		int n;
+		for (n = 0; n < rlen+2; n++) {
+			printf(" %02x", buf[n]);
+		}
+		printf("\n");
+	}
+#endif
+	if (memcmp(buf+1, sample, rlen) != 0) {
+		fprintf(stderr, TAG ": "
+		    "p_rem(0x%x,%d,...) sample mismatch\n",
+		    ppoly, rlen);
 		exit(1);
 	}
 

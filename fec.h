@@ -18,3 +18,5 @@ unsigned int gf_mult(struct gf *f, unsigned int a, unsigned int b);
 int p_gen_gen(struct gf *f, unsigned char *dst, int start_power, int end_power);
 void p_mul(struct gf *f, unsigned char *dst,
     int alen, unsigned char *pa, int blen, unsigned char *pb);
+void p_rem(struct gf *f, unsigned char *rem, int len,
+    int alen, const unsigned char *pa, const unsigned char *div);

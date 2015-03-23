@@ -2,6 +2,7 @@
  * fec.c: implementation of FEC, including GF arithmetic
  */
 #include <stdlib.h>
+#include <string.h>
 
 #include "fec.h"
 
@@ -261,15 +262,52 @@ void p_mul(struct gf *f, unsigned char *dst,
 }
 
 /*
- * Over GF(256) f, divide polynomial a[alen] by polynomial b[len],
- * and store the remainder in r[len].
+ * Over GF(256) f, divide polynomial pa[alen] by polynomial div[len+1],
+ * and store the remainder in rem[len]. Quotient is discarded.
+ * This function uses the same representation that we use above,
+ * with X^(len-1) being the leftmost (array index 0).
  */
-void p_rem(struct gf *f, unsigned char *r, int len, int alen,
-    const char *a, const char *b)
+void p_rem(struct gf *f, unsigned char *rem, int len,
+    int alen, const unsigned char *pa, const unsigned char *div)
 {
-	int i;
-	/* XXX */
-	for (i = 0; i < len; i++)
-		r[0] = 0xff;
+	int l;
+	int i, j;
+	unsigned char *accum;
+	unsigned char rem_0;
+
+	/* It's redundant to carry this 1, yes, but c'est la vie. */
+	if (div[0] != 1)
+		abort();
+
+	/* It's either this, limit len, or GNU alloca() - pick your poison. */
+	accum = malloc(len+1);
+	if (!accum)
+		abort();
+
+	l = (len < alen) ? len : alen;
+	memcpy(rem, pa, l);
+	if (l < len)
+		memset(rem + l, 0, len - l);
+
+	for (i = len; i < alen + len; i++) {
+		rem_0 = rem[0];
+		memmove(rem, rem+1, len-1);
+		rem[len-1] = (i < alen) ? pa[i] : 0;
+
+		for (j = 0; j < len+1; j++) {
+			accum[j] = gf_mult(f, div[j], rem_0);
+		}
+		/*
+		 * At this point, accum[0] is always the same as rem_0,
+		 * because div[0] is always 1. If we subtracted them,
+		 * we would get zero. So we skip that.
+		 */
+
+		for (j = 0; j < len; j++) {
+			rem[j] = gf_add(f, accum[j + 1], rem[j]);
+		}
+	}
+
+	free(accum);
 	return;
 }
