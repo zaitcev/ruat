@@ -20,7 +20,8 @@ static void test_gen_gen(unsigned int poly, int rpow, int len,
 static void test_rem_qrc(void);
 static void test_rem_uat1(void);
 static void test_rem_uat2(void);
-static void test_rem(int mlen, const unsigned char *msg,
+static void test_rem_uat3(void);
+static void test_rem(struct gf *f, int mlen, const unsigned char *msg,
     unsigned int ppoly, int gplen, const unsigned char *gpoly,
     const unsigned char *sample);
 
@@ -337,6 +338,7 @@ int main(int argc, char **argv)
 	test_rem_qrc();
 	test_rem_uat1();
 	test_rem_uat2();
+	test_rem_uat3();
 	return 0;
 }
 
@@ -516,7 +518,11 @@ static void test_gen_gen(unsigned int poly, int rpow, int len,
 		exit(1);
 	}
 
-	gf_init(&field, poly);
+	rc = gf_init(&field, poly);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n", poly, rc);
+		exit(1);
+	}
 
 	/*
 	 * Surround the buffer with tripwire. Obviously it's not going to
@@ -564,8 +570,20 @@ static void test_rem_qrc(void)
 	static unsigned char sample_msg[3] = { 0x12, 0x34, 0x56 };
 	static unsigned char sample_rem[4] = { 0x37, 0xe6, 0x78, 0xd9 };
 
-	test_rem(sizeof(sample_msg), sample_msg,
+	struct gf field;
+	int rc;
+
+	rc = gf_init(&field, sample_pp);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	test_rem(&field, sizeof(sample_msg), sample_msg,
 	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+
+	gf_fin(&field);
 }
 
 static void test_rem_uat1(void)
@@ -591,8 +609,20 @@ static void test_rem_uat1(void)
 	    0xf7, 0x97, 0xce, 0x8c, 0xf7, 0x7e, 0xcb, 0x7e, 0x99, 0xcc
 	};
 
-	test_rem(sizeof(sample_msg), sample_msg,
+	struct gf field;
+	int rc;
+
+	rc = gf_init(&field, sample_pp);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	test_rem(&field, sizeof(sample_msg), sample_msg,
 	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+
+	gf_fin(&field);
 }
 
 static void test_rem_uat2(void)
@@ -618,8 +648,62 @@ static void test_rem_uat2(void)
 	    0xd4, 0xb9, 0x45, 0x4a, 0x92, 0xc7, 0x5a, 0xa2, 0x04, 0x8f
 	};
 
-	test_rem(sizeof(sample_msg), sample_msg,
+	struct gf field;
+	int rc;
+
+	rc = gf_init(&field, sample_pp);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	test_rem(&field, sizeof(sample_msg), sample_msg,
 	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+
+	gf_fin(&field);
+}
+
+/*
+ * This is the ADS-B Long packet, for which we do not have a sample
+ * generator polynomial, so we generate it.
+ */
+static void test_rem_uat3(void)
+{
+	static unsigned int sample_pp = GF256_POLY_UAT;
+	static unsigned char sample_gp[15];
+	static unsigned char sample_msg[34] = {
+	    0x0b, 0x9a, 0x08, 0x6f, 0x32, 0x1c, 0x29, 0x68, 0x6a, 0xd0,
+	    0x20, 0x66, 0x02, 0xf8, 0x13, 0xc1, 0x51, 0x05, 0xc4, 0xe6,
+	    0xc4, 0xe6, 0xc4, 0x0a, 0x12, 0x82, 0x03, 0x00, 0x00, 0x00,
+	    0x00, 0x00, 0x00, 0x00
+	};
+	static unsigned char sample_rem[14] = {
+	    0x9e, 0x5f, 0x81, 0xe2, 0x2b, 0x70, 0xd8, 0x8a, 0x3b, 0x0f,
+	    0x3e, 0x2c, 0xec, 0x7d
+	};
+
+	struct gf field;
+	int rc;
+
+	rc = gf_init(&field, sample_pp);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": gf_init(0x%x) error: %d\n",
+		    GF256_POLY_UAT, rc);
+		exit(1);
+	}
+
+	rc = p_gen_gen(&field, sample_gp, 120, 134);
+	if (rc != 0) {
+		fprintf(stderr, TAG ": p_gen_gen(0x%x,%d,%d) error: %d\n",
+		    GF256_POLY_UAT, 120, 134, rc);
+		exit(1);
+	}
+
+	test_rem(&field, sizeof(sample_msg), sample_msg,
+	    sample_pp, sizeof(sample_gp), sample_gp, sample_rem);
+
+	gf_fin(&field);
 }
 
 /*
@@ -627,12 +711,11 @@ static void test_rem_uat2(void)
  * what is taken by gpoly[] argument from ppoly and gplen. But we focus
  * on testing p_rem() for now and use pre-cooked poly from samples above.
  */
-static void test_rem(int mlen, const unsigned char *msg,
+static void test_rem(struct gf *f, int mlen, const unsigned char *msg,
     unsigned int ppoly, int gplen, const unsigned char *gpoly,
     const unsigned char *sample)
 {
 	int rlen = gplen - 1;
-	struct gf field;
 	unsigned char *buf;
 
 	buf = malloc(rlen + 2);
@@ -641,15 +724,13 @@ static void test_rem(int mlen, const unsigned char *msg,
 		exit(1);
 	}
 
-	gf_init(&field, ppoly);
-
 	/*
 	 * Surround the buffer with tripwire. Obviously it's not going to
 	 * catch every concievable memory scribble, but better than nothing.
 	 */
 	memset(buf, 0xe5, rlen+2);
 
-	p_rem(&field, buf+1, rlen, mlen, msg, gpoly);
+	p_rem(f, buf+1, rlen, mlen, msg, gpoly);
 
 	if (buf[0] != 0xe5 || buf[rlen+1] != 0xe5) {
 		fprintf(stderr, TAG ": "
@@ -673,6 +754,5 @@ static void test_rem(int mlen, const unsigned char *msg,
 		exit(1);
 	}
 
-	gf_fin(&field);
 	free(buf);
 }
