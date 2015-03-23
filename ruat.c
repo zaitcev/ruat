@@ -60,7 +60,6 @@ struct ss_stat {
 struct param {
 	int gain;
 	int raw;
-	int verbose;		/* XXX Currently does nothing */
 	int dump_interval;	/* seconds */
 };
 
@@ -831,7 +830,6 @@ static void params(struct param *par, int argc, char **argv)
 
 	par->gain = (~0);
 	par->raw = 0;
-	par->verbose = 0;
 	par->dump_interval = 10;
 
 	argv += 1;
@@ -858,8 +856,6 @@ static void params(struct param *par, int argc, char **argv)
 				par->gain = n;
 			} else if (arg[1] == 'r') {
 				par->raw = 1;
-			} else if (arg[1] == 'v') {
-				par->verbose = 1;
 			} else {
 				Usage();
 			}
@@ -871,7 +867,7 @@ static void params(struct param *par, int argc, char **argv)
 
 static void Usage(void)
 {
-	fprintf(stderr, "Usage: " TAG " [-v] [-r] [-d interval] [-g gain]\n");
+	fprintf(stderr, "Usage: " TAG " [-r] [-d interval] [-g gain]\n");
 	exit(1);
 }
 
