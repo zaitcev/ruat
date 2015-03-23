@@ -754,12 +754,10 @@ static void packet_active_short(char *bits)
 		for (i = 0; i < 18; i++)
 			printf("%02x", packet[i]);
 		printf(";");
-#if 1 /* P3 */
 		printf(" fec=");
 		for (i = 0; i < 12; i++) {
 			printf("%02x", packet[18 + i]);
 		}
-#endif
 		printf("\n");
 		fflush(stdout);
 	} else {
@@ -790,12 +788,10 @@ static void packet_active_long(char *bits)
 		for (i = 0; i < 34; i++)
 			printf("%02x", packet[i]);
 		printf(";");
-#if 1 /* P3 */  
 		printf(" fec=");
 		for (i = 0; i < 14; i++) {
 			printf("%02x", packet[34 + i]);
 		}
-#endif
 		printf("\n");
 		fflush(stdout);
 	} else {
@@ -839,7 +835,6 @@ static void packet_uplink(char *bits)
 			}
 		}
 		printf(";");
-#if 1 /* P3 */
 		printf(" fec=");
 		for (i = 0; i < 6; i++) {
 			p = packet + i*92 + 72;
@@ -847,7 +842,6 @@ static void packet_uplink(char *bits)
 				printf("%02x", p[j]);
 			}
 		}
-#endif
 		printf("\n");
 	} else {
 		ecnt = 0;
@@ -869,7 +863,7 @@ static void packet_uplink(char *bits)
 			printf(";\n");
 			fflush(stdout);
 		} else {
-			printf("u %d\n", ecnt); /* P3 */
+			printf("u %d\n", ecnt);
 		}
 	}
 }
