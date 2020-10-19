@@ -1,4 +1,4 @@
-ruat version 0.2
+ruat version 0.2.1
 The idea here is to make something like dump1090, but for UAT.
 
 We now have dump978, and ruat mostly offers historic interest. See:
@@ -28,3 +28,4 @@ TODO
  - precalc arc-tangents once and link to them at build time
  - learn from Oliver and get rid of phi buffers entirely; calculate phi,
    compare with A/U code, unroll the bits with a known odd/even.
+ - get rid of obfuscating libraries and talk directly to libusb
