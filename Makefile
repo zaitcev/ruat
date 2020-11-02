@@ -29,16 +29,18 @@ ruat: ruat.o fec.o
 
 ruat.o: ruat.c fec.h
 
-ruat_airspy: ruat_airspy.o fec.o
-	${CC} ${LDFLAGS} -o ruat_airspy ruat_airspy.o fec.o ${LIBS_A}
+ruat_airspy: ruat_airspy.o fec.o upd.o
+	${CC} ${LDFLAGS} -o ruat_airspy ruat_airspy.o fec.o upd.o ${LIBS_A}
 
-ruat_airspy.o: ruat_airspy.c fec.h phasetab.h
+ruat_airspy.o: ruat_airspy.c fec.h upd.h phasetab.h
 
 tester: tester.o fec.o
 
 tester.o: tester.c fec.h
 
 fec.o: fec.h fec.c
+
+upd.o: upd.h upd.c
 
 phasetab.h:
 	python3 phasegen.py -o phasetab.h

@@ -11,10 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/time.h>
 
 #include <airspy.h>
 
 #include "fec.h"
+#include "upd.h"
 
 #define TAG "ruat_airspy"
 
@@ -29,20 +31,64 @@ struct param {
 	int vga_gain;
 };
 
+// struct rx_state {
+// 	int fs4_osc;		// 0 <= fs4_osc < 4
+// };
+
+struct rx_counts {
+	unsigned long c_nocore;
+	unsigned long c_bufdrop;
+	unsigned long c_bufcnt;
+};
+
+struct packet {
+	struct packet *next;
+	int num;		// number of complex samples
+	int *buf;		// XXX make these short
+};
+
 static void parse(struct param *p, char **argv);
 static void Usage(void);
 static int rx_callback(airspy_transfer_t *xfer);
+static unsigned int dc_bias_update(unsigned char *sp);
 
 static struct param par;
 
+/*
+ * We're treating the offset by 0x800 as a part of the DC bias.
+ */
+#define BVLEN  (128)
+static unsigned int dc_bias = 0x800;
+static unsigned int bias_timer;
+
+// static struct rx_state rxstate;
+
+#define PMAX  20
+
+static pthread_mutex_t rx_mutex;
+static pthread_cond_t rx_cond;
+unsigned int pcnt;
+struct packet *phead, *ptail;
+struct rx_counts c_stat;
+
 int main(int argc, char **argv)
 {
-	int rc;
 	struct airspy_device *device = NULL;
 	int (*rx_cb)(airspy_transfer_t *xfer);
-	// int i;
+	enum { AVGLEN = 200 };
+	struct upd uavg_i, uavg_q;
+	struct timeval count_last, now;
+	int avg_i, avg_q;
+	int rc;
+	int i;
 
 	parse(&par, argv);
+
+	if (upd_init(&uavg_i, AVGLEN) != 0 || upd_init(&uavg_q, AVGLEN) != 0) {
+		fprintf(stderr, TAG ": upd_init() failed: No core\n");
+		/* leaks a little bit but we're bailing anyway */
+		goto err_upd;
+	}
 
 	rc = airspy_init();
 	if (rc != AIRSPY_SUCCESS) {
@@ -168,49 +214,71 @@ int main(int argc, char **argv)
 		goto err_freq;
 	}
 
+	gettimeofday(&count_last, NULL);
+
 	while (airspy_is_streaming(device)) {
 #if 0 /* XXX */
 		FILE *fp = stdout;
-		struct cap1 *pc;
-		int *vp, *pp;
-
-		pthread_mutex_lock(&rx_mutex);
-		pc = pcap;
-		pcap = NULL;
-		pthread_mutex_unlock(&rx_mutex);
-
-		if (pc != NULL) {
-			fprintf(fp, "# bias %d len %d\n",
-			    pc->bias, pc->len);
-			vp = (int *)pc->buf;
-			pp = (int *)pc->buf + pc->len;
-			for (i = 0; i < pc->len; i++) {
-				fprintf(fp, " %4d %6d\n", vp[i], pp[i]);
-			}
-			fflush(fp);
-			free(pc);
-		}
-
-		pthread_mutex_lock(&rx_mutex);
-		if (pcap == NULL) {
-			rc = pthread_cond_wait(&rx_cond, &rx_mutex);
-			if (rc != 0) {
-				pthread_mutex_unlock(&rx_mutex);
-				fprintf(stderr,
-				   TAG "pthread_cond_wait() failed:"
-				   " %d\n", rc);
-				exit(1);
-			}
-		}
-		pthread_mutex_unlock(&rx_mutex);
 #endif
-		sleep(1); /* XXX */
+
+		pthread_mutex_lock(&rx_mutex);
+		while (pcnt) {
+			struct packet *pp;
+			int *p;
+
+			--pcnt;
+			pp = phead;
+			phead = pp->next;
+			pthread_mutex_unlock(&rx_mutex);
+
+			p = pp->buf;
+			for (i = 0; i < pp->num; i++) {
+				/* I, Q */
+				avg_i = upd_ate(&uavg_i, abs(p[0]));
+				avg_q = upd_ate(&uavg_q, abs(p[1]));
+				p += 2;
+			}
+
+			free(pp->buf);
+			free(pp);
+
+			pthread_mutex_lock(&rx_mutex);
+			c_stat.c_bufcnt++;
+
+			gettimeofday(&now, NULL);
+			if (now.tv_sec >= count_last.tv_sec + 10) {
+				unsigned long bufcnt, bufdrop, nocore;
+				bufcnt = c_stat.c_bufcnt;
+				bufdrop = c_stat.c_bufdrop;
+				nocore = c_stat.c_nocore;
+				memset(&c_stat, 0, sizeof(struct rx_counts));
+				pthread_mutex_unlock(&rx_mutex);
+
+				printf("# nocore %lu drop %lu bufs %lu"
+                                    " avg I %d Q %d\n",
+				    nocore, bufdrop, bufcnt, avg_i, avg_q);
+
+				count_last = now;
+				pthread_mutex_lock(&rx_mutex);
+			}
+		}
+		rc = pthread_cond_wait(&rx_cond, &rx_mutex);
+		if (rc != 0) {
+			pthread_mutex_unlock(&rx_mutex);
+			fprintf(stderr,
+			   TAG "pthread_cond_wait() failed:"
+			   " %d\n", rc);
+			exit(1);
+		}
+		pthread_mutex_unlock(&rx_mutex);
 	}
 
 	airspy_stop_rx(device);
 	airspy_close(device);
 	airspy_exit();
 
+	upd_fini(&uavg_i);
+	upd_fini(&uavg_q);
 	return 0;
 
 err_freq:
@@ -224,6 +292,9 @@ err_sample:
 err_open:
 	airspy_exit();
 err_init:
+	upd_fini(&uavg_i);
+	upd_fini(&uavg_q);
+err_upd:
 	return 1;
 }
 
@@ -312,5 +383,108 @@ static void Usage(void)
 
 static int rx_callback(airspy_transfer_t *xfer)
 {
+	// struct rx_state *rsp = &rxstate;
+	int i;
+	unsigned char *sp;
+	struct packet *pp;
+	int *bp;
+
+	if (bias_timer == 0) {
+		if (xfer->sample_count >= BVLEN) {
+			sp = xfer->samples;
+			dc_bias = dc_bias_update(sp);
+		}
+	}
+	bias_timer = (bias_timer + 1) % 10;
+
+	/*
+	 * Premature optimization is the root of all evil. -- D. Knuth
+	 */
+	bp = malloc(xfer->sample_count * sizeof(int));
+	if (bp == NULL) {
+		pthread_mutex_lock(&rx_mutex);
+		c_stat.c_nocore++;
+		pthread_mutex_unlock(&rx_mutex);
+		return 0;
+	}
+
+	sp = xfer->samples;
+	for (i = 0; i < xfer->sample_count; i += 4) {
+		unsigned int sample;
+		int value;
+
+		// sample = sp[1]<<8 | sp[0];
+		// value = (int) sample - (int) dc_bias;
+		// p = avg_update(&rs.smoo, abs(value));
+
+		/*
+		 * This also decimates by two, but whatever.
+		 */
+
+		sample = sp[1]<<8 | sp[0];
+		value = (int) sample - (int) dc_bias;
+		bp[i+0] = value;	// I(0) = cos(0 *pi/2) * x(0)
+
+		sample = sp[3]<<8 | sp[2];
+		value = (int) sample - (int) dc_bias;
+		bp[+1] = value * -1;	// Q(0) = -j*sin(1 * pi/2) * x(1)
+
+		sample = sp[5]<<8 | sp[4];
+		value = (int) sample - (int) dc_bias;
+		bp[i+2] = value * -1;	// I(1) = cos(2 * pi/2) * x(2)
+
+		sample = sp[7]<<8 | sp[6];
+		value = (int) sample - (int) dc_bias;
+		bp[i+3] = value;	// Q(1) = -j*sin(3 * pi/2) * x(3)
+
+		sp += 8;
+	}
+
+	pp = malloc(sizeof(struct packet));
+	if (pp == NULL) {
+		free(bp);
+		pthread_mutex_lock(&rx_mutex);
+		c_stat.c_nocore++;
+		pthread_mutex_unlock(&rx_mutex);
+		return 0;
+	}
+	memset(pp, 0, sizeof(struct packet));
+	pp->num = xfer->sample_count / 2;
+	pp->buf = bp;
+
+	pthread_mutex_lock(&rx_mutex);
+	if (pcnt >= PMAX) {
+		c_stat.c_bufdrop++;
+		pthread_mutex_unlock(&rx_mutex);
+		free(pp->buf);
+		free(pp);
+		return 0;
+	}
+
+	if (pcnt == 0) {
+		phead = pp;
+		ptail = pp;
+	} else {
+		ptail->next = pp;
+		ptail = pp;
+	}
+	pcnt++;
+	pthread_cond_broadcast(&rx_cond);
+	pthread_mutex_unlock(&rx_mutex);
+
 	return 0;
+}
+
+// Method Zero: direct calculation of the average (the fastest, strangely)
+static unsigned int dc_bias_update(unsigned char *sp)
+{
+	int i;
+	unsigned int sum;
+
+	sum = 0;
+	for (i = 0; i < BVLEN; i++) {
+		sum += ((unsigned int) sp[1])<<8 | sp[0];
+		sp += 2;
+	}
+	return sum / BVLEN;
 }
