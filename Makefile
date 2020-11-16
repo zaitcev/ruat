@@ -19,17 +19,20 @@ CFLAGS += -I/usr/local/include/libairspy
 LDFLAGS += -L/usr/local/lib
 LIBS_A = $(LIBS) -lairspy
 
+# The phasetab.h rule is not atomic.
+.DELETE_ON_ERROR:
+
 all: ruat ruat_airspy tester
 
 ruat: ruat.o fec.o
 	${CC} ${LDFLAGS} -o ruat ruat.o fec.o ${LIBS_R}
 
-ruat.o: ruat.c
+ruat.o: ruat.c fec.h
 
 ruat_airspy: ruat_airspy.o fec.o
 	${CC} ${LDFLAGS} -o ruat_airspy ruat_airspy.o fec.o ${LIBS_A}
 
-ruat_airspy.o: ruat_airspy.c
+ruat_airspy.o: ruat_airspy.c fec.h phasetab.h
 
 tester: tester.o fec.o
 
@@ -37,8 +40,11 @@ tester.o: tester.c fec.h
 
 fec.o: fec.h fec.c
 
+phasetab.h:
+	python3 phasegen.py -o phasetab.h
+
 check: tester
 	./tester
 
 clean:
-	rm -f ruat ruat_airspy tester *.o
+	rm -f ruat ruat_airspy tester phasetab.h *.o
