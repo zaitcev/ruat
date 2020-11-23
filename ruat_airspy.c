@@ -6,6 +6,7 @@
  * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE. See file COPYING
  * for details.
  */
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,11 +19,13 @@
 #include "fec.h"
 #include "upd.h"
 
+#include "phasetab.h"
+
 #define TAG "ruat_airspy"
 
 #define UAT_FREQ  978000000	/* carrier or center frequency, Doc 9861 2.2 */
 #define UAT_MOD      312500	/* notional modulation */
-#define UAT_RATE (2*1041667)
+#define UAT_RATE (2*1041667)	/* 25 bits in every 24 microseconds */
 
 struct param {
 	int mode_capture;
@@ -31,9 +34,16 @@ struct param {
 	int vga_gain;
 };
 
-// struct rx_state {
-// 	int fs4_osc;		// 0 <= fs4_osc < 4
-// };
+#define HGLEN 36
+struct rx_state {
+	// int fs4_osc;		// 0 <= fs4_osc < 4
+	struct upd uavg_i, uavg_q;
+	float prev_phi;
+	unsigned long hgram[HGLEN];
+	unsigned long hgram_e1, hgram_e2;
+	float hgram_e2_save_d;
+	int hgram_e2_save_x;
+};
 
 struct rx_counts {
 	unsigned long c_nocore;
@@ -47,6 +57,12 @@ struct packet {
 	int *buf;		// XXX make these short
 };
 
+static int rx_state_init(struct rx_state *rsp);
+static void rx_state_fini(struct rx_state *rsp);
+static void scan_buf(struct rx_state *rsp, struct packet *pp);
+static void timer_print(
+    unsigned long bufcnt, unsigned long bufdrop, unsigned long nocore,
+    struct rx_state *rsp);
 static void parse(struct param *p, char **argv);
 static void Usage(void);
 static int rx_callback(airspy_transfer_t *xfer);
@@ -61,8 +77,6 @@ static struct param par;
 static unsigned int dc_bias = 0x800;
 static unsigned int bias_timer;
 
-// static struct rx_state rxstate;
-
 #define PMAX  20
 
 static pthread_mutex_t rx_mutex;
@@ -75,16 +89,13 @@ int main(int argc, char **argv)
 {
 	struct airspy_device *device = NULL;
 	int (*rx_cb)(airspy_transfer_t *xfer);
-	enum { AVGLEN = 200 };
-	struct upd uavg_i, uavg_q;
+	static struct rx_state rxstate;
 	struct timeval count_last, now;
-	int avg_i, avg_q;
 	int rc;
-	int i;
 
 	parse(&par, argv);
 
-	if (upd_init(&uavg_i, AVGLEN) != 0 || upd_init(&uavg_q, AVGLEN) != 0) {
+	if (rx_state_init(&rxstate) != 0) {
 		fprintf(stderr, TAG ": upd_init() failed: No core\n");
 		/* leaks a little bit but we're bailing anyway */
 		goto err_upd;
@@ -217,27 +228,17 @@ int main(int argc, char **argv)
 	gettimeofday(&count_last, NULL);
 
 	while (airspy_is_streaming(device)) {
-#if 0 /* XXX */
-		FILE *fp = stdout;
-#endif
 
 		pthread_mutex_lock(&rx_mutex);
 		while (pcnt) {
 			struct packet *pp;
-			int *p;
 
 			--pcnt;
 			pp = phead;
 			phead = pp->next;
 			pthread_mutex_unlock(&rx_mutex);
 
-			p = pp->buf;
-			for (i = 0; i < pp->num; i++) {
-				/* I, Q */
-				avg_i = upd_ate(&uavg_i, abs(p[0]));
-				avg_q = upd_ate(&uavg_q, abs(p[1]));
-				p += 2;
-			}
+			scan_buf(&rxstate, pp);
 
 			free(pp->buf);
 			free(pp);
@@ -248,15 +249,15 @@ int main(int argc, char **argv)
 			gettimeofday(&now, NULL);
 			if (now.tv_sec >= count_last.tv_sec + 10) {
 				unsigned long bufcnt, bufdrop, nocore;
-				bufcnt = c_stat.c_bufcnt;
-				bufdrop = c_stat.c_bufdrop;
+
 				nocore = c_stat.c_nocore;
+				bufdrop = c_stat.c_bufdrop;
+				bufcnt = c_stat.c_bufcnt;
 				memset(&c_stat, 0, sizeof(struct rx_counts));
+
 				pthread_mutex_unlock(&rx_mutex);
 
-				printf("# nocore %lu drop %lu bufs %lu"
-                                    " avg I %d Q %d\n",
-				    nocore, bufdrop, bufcnt, avg_i, avg_q);
+				timer_print(bufcnt, bufdrop, nocore, &rxstate);
 
 				count_last = now;
 				pthread_mutex_lock(&rx_mutex);
@@ -277,8 +278,7 @@ int main(int argc, char **argv)
 	airspy_close(device);
 	airspy_exit();
 
-	upd_fini(&uavg_i);
-	upd_fini(&uavg_q);
+	rx_state_fini(&rxstate);
 	return 0;
 
 err_freq:
@@ -292,12 +292,123 @@ err_sample:
 err_open:
 	airspy_exit();
 err_init:
-	upd_fini(&uavg_i);
-	upd_fini(&uavg_q);
+	rx_state_fini(&rxstate);
 err_upd:
 	return 1;
 }
 
+static int rx_state_init(struct rx_state *rsp)
+{
+	enum { AVGLEN = 200 };
+
+	if (upd_init(&rsp->uavg_i, AVGLEN) != 0)
+		goto err_i;
+	if (upd_init(&rsp->uavg_q, AVGLEN) != 0)
+		goto err_q;
+	rsp->prev_phi = 0.0;
+	return 0;
+
+err_q:
+	upd_fini(&rsp->uavg_i);
+err_i:
+	return -1;
+}
+
+static void rx_state_fini(struct rx_state *rsp)
+{
+	upd_fini(&rsp->uavg_i);
+	upd_fini(&rsp->uavg_q);
+}
+
+static void scan_buf(struct rx_state *rsp, struct packet *pp)
+{
+	const int *p;
+	int i;
+	int x, y;
+	int x_comp, y_comp;
+	float phi;
+	float delta;
+	int buck_x;
+
+	p = pp->buf;
+	for (i = 0; i < pp->num; i++) {
+
+		/* I, Q */
+		upd_ate(&rsp->uavg_i, abs(p[0]));
+		upd_ate(&rsp->uavg_q, abs(p[1]));
+
+		x = p[0];
+		y = p[1];
+		/* XXX assert(abs(x) < 2048); */
+		x_comp = com_tab[abs(x)];
+		y_comp = com_tab[abs(y)];
+		switch (((y < 0) << 1) + (x < 0)) {
+		default:
+			phi = phi_tab[y_comp][x_comp];
+			break;
+		case 1:
+			phi = phi_tab[x_comp][y_comp] + M_PI*0.5;
+			break;
+		case 3:
+			phi = phi_tab[y_comp][x_comp] + M_PI;
+			break;
+		case 2:
+			phi = phi_tab[x_comp][y_comp] + M_PI*1.5;
+		}
+
+		delta = phi - rsp->prev_phi;
+		if (delta < 0.0)
+			delta += 2*M_PI;
+
+		if (delta < 0.0 || delta >= 2*M_PI) {
+			rsp->hgram_e1++;
+		} else {
+			buck_x = (int)((delta / (2*M_PI)) * HGLEN);
+			if (buck_x < 0 || buck_x >= HGLEN) {	// never happens
+				rsp->hgram_e2++;
+				rsp->hgram_e2_save_d = delta;
+				rsp->hgram_e2_save_x = buck_x;
+			} else {
+				rsp->hgram[buck_x]++;
+			}
+		}
+
+		rsp->prev_phi = phi;
+
+		p += 2;
+	}
+}
+
+static void timer_print(
+    unsigned long bufcnt,
+    unsigned long bufdrop,
+    unsigned long nocore,
+    struct rx_state *rsp)
+{
+	int i;
+	int avg_i, avg_q;
+
+	avg_i = UPD_CUR(&rsp->uavg_i);
+	avg_q = UPD_CUR(&rsp->uavg_q);
+
+	printf("# nocore %lu drop %lu bufs %lu avg I %d Q %d\n",
+	       nocore, bufdrop, bufcnt, avg_i, avg_q);
+
+	printf(" e1 %lu e2 %lu (d %f x %d)\n", rsp->hgram_e1, rsp->hgram_e2,
+	    rsp->hgram_e2_save_d, rsp->hgram_e2_save_x);
+	/* This multi-line output is easy to dump into gnuplot for analysis. */
+	for (i = 0; i < HGLEN; i++) {
+		printf(" %f, %lu\n",
+		    (i + 0.5) * ((2*M_PI)/HGLEN), rsp->hgram[i]);
+	}
+
+	fflush(stdout);
+
+	for (i = 0; i < HGLEN; i++)
+		rsp->hgram[i] = 0;
+	rsp->hgram_e1 = 0;
+	rsp->hgram_e2 = 0;
+}
 
 static void parse(struct param *p, char **argv)
 {
@@ -383,7 +494,6 @@ static void Usage(void)
 
 static int rx_callback(airspy_transfer_t *xfer)
 {
-	// struct rx_state *rsp = &rxstate;
 	int i;
 	unsigned char *sp;
 	struct packet *pp;

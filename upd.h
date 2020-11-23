@@ -14,6 +14,8 @@ struct upd {
 	unsigned int x;
 };
 
+#define UPD_CUR(up) ((up)->cur / (up)->len)
+
 int upd_init(struct upd *up, int length);
 int upd_ate(struct upd *up, int p);
 void upd_fini(struct upd *up);
