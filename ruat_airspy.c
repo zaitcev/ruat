@@ -427,7 +427,7 @@ static int rx_callback(airspy_transfer_t *xfer)
 
 		sample = sp[3]<<8 | sp[2];
 		value = (int) sample - (int) dc_bias;
-		bp[+1] = value * -1;	// Q(0) = -j*sin(1 * pi/2) * x(1)
+		bp[i+1] = value * -1;	// Q(0) = -j*sin(1 * pi/2) * x(1)
 
 		sample = sp[5]<<8 | sp[4];
 		value = (int) sample - (int) dc_bias;
