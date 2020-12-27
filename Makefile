@@ -49,4 +49,4 @@ check: tester
 	./tester
 
 clean:
-	rm -f ruat ruat_airspy tester phasetab.h *.o
+	rm -f ruat ruat_airspy tester *.o
