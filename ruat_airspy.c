@@ -60,6 +60,7 @@ struct packet {
 static int rx_state_init(struct rx_state *rsp);
 static void rx_state_fini(struct rx_state *rsp);
 static void scan_buf(struct rx_state *rsp, struct packet *pp);
+static void dump_buf(struct rx_state *rsp, struct packet *pp);
 static void timer_print(
     unsigned long bufcnt, unsigned long bufdrop, unsigned long nocore,
     struct rx_state *rsp);
@@ -89,6 +90,8 @@ int main(int argc, char **argv)
 {
 	struct airspy_device *device = NULL;
 	int (*rx_cb)(airspy_transfer_t *xfer);
+	int stop = 0;
+	int cap_skip = 0;
 	static struct rx_state rxstate;
 	struct timeval count_last, now;
 	int rc;
@@ -227,7 +230,7 @@ int main(int argc, char **argv)
 
 	gettimeofday(&count_last, NULL);
 
-	while (airspy_is_streaming(device)) {
+	while (airspy_is_streaming(device) && !stop) {
 
 		pthread_mutex_lock(&rx_mutex);
 		while (pcnt) {
@@ -238,7 +241,15 @@ int main(int argc, char **argv)
 			phead = pp->next;
 			pthread_mutex_unlock(&rx_mutex);
 
-			scan_buf(&rxstate, pp);
+			if (par.mode_capture) {
+				if (++cap_skip >= 30 && !stop) {
+					dump_buf(&rxstate, pp);
+					stop = 1;
+					break;
+				}
+			} else {
+				scan_buf(&rxstate, pp);
+			}
 
 			free(pp->buf);
 			free(pp);
@@ -375,6 +386,20 @@ static void scan_buf(struct rx_state *rsp, struct packet *pp)
 
 		rsp->prev_phi = phi;
 
+		p += 2;
+	}
+}
+
+static void dump_buf(struct rx_state *rsp, struct packet *pp)
+{
+	const int *p;
+	int i;
+	int lim;
+
+	p = pp->buf;
+	lim = pp->num < 1000 ? pp->num : 1000;
+	for (i = 0; i < lim; i++) {
+		printf("%d %d\n", p[0], p[1]);
 		p += 2;
 	}
 }
