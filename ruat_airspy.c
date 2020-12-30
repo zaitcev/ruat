@@ -25,7 +25,7 @@
 
 #define UAT_FREQ  978000000	/* carrier or center frequency, Doc 9861 2.2 */
 #define UAT_MOD      312500	/* notional modulation */
-#define UAT_RATE (2*1041667)	/* 25 bits in every 24 microseconds */
+#define UAT_RATE    1041667	/* 25 bits in every 24 microseconds */
 
 struct param {
 	int mode_capture;
@@ -34,16 +34,34 @@ struct param {
 	int vga_gain;
 };
 
-#define HGLEN 36
+#define HGLEN 40
+enum bit_state { BIT_HUNT, BIT_GAP, BIT_BODY };
 struct rx_state {
 	// int fs4_osc;		// 0 <= fs4_osc < 4
 	struct upd uavg_i, uavg_q;
 	float prev_phi;
+	float prev_delta;
+
 	unsigned long hgram[HGLEN];
 	unsigned long hgram_e1, hgram_e2;
-	float hgram_e2_save_d;
-	int hgram_e2_save_x;
+
+	enum bit_state state;
+	int valcnt, vallim;
+	int bitcnt;
 };
+
+/*
+ * The limit macros implement the "25 bits in 240 samples" ratio schedule
+ * for inter-bit gaps and bit "bodies". Notice that the zero is where the
+ * initial body presumably starts. The one-bit offset is there to account
+ * for the round-down behavior of integer division in C.
+ */
+#define VAL_LIM_BODY_0  5
+#define VAL_LIM_GAP(bitcnt)  (((bitcnt)*240)/25 + 1)
+#define VAL_LIM_BODY(bitcnt) (((bitcnt)*240)/25 + 6)
+
+/* XXX temporary */
+#define HDR_LEN  1000
 
 struct rx_counts {
 	unsigned long c_nocore;
@@ -60,6 +78,7 @@ struct packet {
 static int rx_state_init(struct rx_state *rsp);
 static void rx_state_fini(struct rx_state *rsp);
 static void scan_buf(struct rx_state *rsp, struct packet *pp);
+static void hgram_one(struct rx_state *rsp, int bitnum);
 static void dump_buf(struct rx_state *rsp, struct packet *pp);
 static void timer_print(
     unsigned long bufcnt, unsigned long bufdrop, unsigned long nocore,
@@ -317,6 +336,10 @@ static int rx_state_init(struct rx_state *rsp)
 	if (upd_init(&rsp->uavg_q, AVGLEN) != 0)
 		goto err_q;
 	rsp->prev_phi = 0.0;
+
+	rsp->state = BIT_HUNT;
+	rsp->bitcnt = 0;
+	rsp->valcnt = 0;
 	return 0;
 
 err_q:
@@ -339,7 +362,6 @@ static void scan_buf(struct rx_state *rsp, struct packet *pp)
 	int x_comp, y_comp;
 	float phi;
 	float delta;
-	int buck_x;
 
 	p = pp->buf;
 	for (i = 0; i < pp->num; i++) {
@@ -370,25 +392,101 @@ static void scan_buf(struct rx_state *rsp, struct packet *pp)
 		delta = phi - rsp->prev_phi;
 		if (delta < 0.0)
 			delta += 2*M_PI;
+		rsp->prev_phi = phi;
 
-		if (delta < 0.0 || delta >= 2*M_PI) {
-			rsp->hgram_e1++;
-		} else {
-			buck_x = (int)((delta / (2*M_PI)) * HGLEN);
-			if (buck_x < 0 || buck_x >= HGLEN) {	// never happens
-				rsp->hgram_e2++;
-				rsp->hgram_e2_save_d = delta;
-				rsp->hgram_e2_save_x = buck_x;
+		/*
+		 * assemble bits
+		 */
+		if (rsp->state == BIT_HUNT) {
+			if ((delta < M_PI && rsp->prev_delta < M_PI) ||
+			    (delta >= M_PI && rsp->prev_delta >= M_PI)) {
+				if (++rsp->valcnt >= VAL_LIM_BODY_0) {
+					// bit_val = ..... (delta)
+					/*
+					 * A pretty good bit, it looks like.
+					 * Now start the schedule.
+					 */
+					rsp->bitcnt = 1;
+					/*
+					 * Change to next state. It always has
+					 * the setting of the state variable
+					 * itself and the invariant that
+					 * follows. Perhaps we need a macro
+					 * to guarantee consistency.
+					 */
+					rsp->state = BIT_GAP;
+					rsp->vallim = VAL_LIM_GAP(rsp->bitcnt);
+				}
 			} else {
-				rsp->hgram[buck_x]++;
+				rsp->valcnt = 0;	/* sad trombone */
+			}
+		} else if (rsp->state == BIT_GAP) {
+			if (++rsp->valcnt >= rsp->vallim) {
+				rsp->state = BIT_BODY;
+				rsp->vallim = VAL_LIM_BODY(rsp->bitcnt);
+			}
+		} else {	/* state == BIT_BODY */
+			if ((delta < M_PI && rsp->prev_delta < M_PI) ||
+			    (delta >= M_PI && rsp->prev_delta >= M_PI)) {
+				if (++rsp->valcnt >= rsp->vallim) {
+					// bit_val = ..... (delta)
+					// if (rsp->bitcnt >= HDR_LEN)
+					if (rsp->bitcnt >= HDR_LEN) {
+						hgram_one(rsp, rsp->bitcnt);
+						rsp->state = BIT_HUNT;
+						rsp->bitcnt = 0;
+						rsp->valcnt = 0;
+					} else {
+						// rsp->bit_string[rsp->bitcnt] = bit_val;
+						rsp->bitcnt++;
+						rsp->state = BIT_GAP;
+						rsp->vallim = VAL_LIM_GAP(rsp->bitcnt);
+					}
+				}
+			} else {
+				/*
+				 * Bombing out as soon as just one value goes
+				 * bad is very strict, but for now let any
+				 * noise like this abort the ingestion of bits,
+				 * for research purposes.
+				 */
+				hgram_one(rsp, rsp->bitcnt);
+				rsp->state = BIT_HUNT;
+				rsp->bitcnt = 0;
+				rsp->valcnt = 0;
 			}
 		}
-
-		rsp->prev_phi = phi;
+		rsp->prev_delta = delta;
 
 		p += 2;
 	}
 }
+
+/*
+ * collect the histogram for debugging
+ */
+static void hgram_one(struct rx_state *rsp, int bitnum)
+{
+	int buck_x;
+
+	if (bitnum <= 0) {
+		rsp->hgram_e1++;
+		return;
+	}
+
+	// buck_x = (int)((delta / (2*M_PI)) * HGLEN);
+	// buck_x = (bitnum * HGLEN) / HDRLEN;
+	buck_x = bitnum - 1;
+	if (buck_x >= (HGLEN-1))
+		buck_x = HGLEN-1;
+
+	if (buck_x < 0 || buck_x >= HGLEN) {	// never happens
+		rsp->hgram_e2++;
+	} else {
+		rsp->hgram[buck_x]++;
+	}
+}
+
 
 static void dump_buf(struct rx_state *rsp, struct packet *pp)
 {
@@ -419,12 +517,10 @@ static void timer_print(
 	printf("# nocore %lu drop %lu bufs %lu avg I %d Q %d\n",
 	       nocore, bufdrop, bufcnt, avg_i, avg_q);
 
-	printf(" e1 %lu e2 %lu (d %f x %d)\n", rsp->hgram_e1, rsp->hgram_e2,
-	    rsp->hgram_e2_save_d, rsp->hgram_e2_save_x);
+	printf(" e1 %lu e2 %lu\n", rsp->hgram_e1, rsp->hgram_e2);
 	/* This multi-line output is easy to dump into gnuplot for analysis. */
 	for (i = 0; i < HGLEN; i++) {
-		printf(" %f, %lu\n",
-		    (i + 0.5) * ((2*M_PI)/HGLEN), rsp->hgram[i]);
+		printf(" %d %lu\n", i+1, rsp->hgram[i]);
 	}
 
 	fflush(stdout);
